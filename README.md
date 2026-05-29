@@ -243,6 +243,7 @@ Or manually add to `~/.gemini/settings.json` (or `.gemini/settings.json` in proj
 - `MCP_TTS_ALLOW_CONCURRENT`: Set to "true" to allow concurrent TTS operations (optional, defaults to sequential)
 - `MCP_TTS_OUTPUT_DIR`: Directory to save audio files (optional)
 - `MCP_TTS_NO_PLAY`: Set to "true" to skip playback when saving (optional, requires `MCP_TTS_OUTPUT_DIR`)
+- `MCP_TTS_ELICIT`: Set to "true" to enable interactive elicitation prompts (also `--elicit`; optional, default off). When off, tools use explicit arguments/defaults without prompting — recommended for agent use.
 
 ### Test
 
