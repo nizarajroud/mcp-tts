@@ -77,17 +77,16 @@
     ]
   },
   "say": {
-    "note": "For macOS say_tts, prefer leaving voice unset to use system default (sounds most natural). Only these downloaded voices are available if explicitly needed.",
-    "available_voices": ["Isha (Premium)", "Serena (Premium)", "Zoe (Premium)", "Evan (Enhanced)"],
-    "recommended_rate": "200-250 (max 300 unless user requests faster)",
+    "note": "say_tts accepts any installed macOS voice (list them with `say -v '?'`); there is no fixed enum. Prefer leaving voice unset to use the system default. CAUTION (macOS Tahoe): the default system voice may be a downloadable Premium/Enhanced voice that is not on disk and produces NO audio while exiting cleanly. If say is silent, pass a known on-disk legacy voice such as 'Samantha' or 'Alex', or download the default voice in System Settings.",
+    "recommended_rate": "200-250 (hard limit 50-500; go above 300 only if the user requests faster)",
     "planning": [{ "voice": null, "description": "system default - recommended" }],
     "issue": [{ "voice": null, "description": "system default - recommended" }],
     "summary": [{ "voice": null, "description": "system default - recommended" }]
   },
   "elevenlabs": {
-    "note": "ElevenLabs voice selection is limited by API - uses default voice. Reserve for special cases.",
-    "planning": [{ "voice": "default", "description": "high quality default" }],
-    "issue": [{ "voice": "default", "description": "high quality default" }],
-    "summary": [{ "voice": "default", "description": "high quality default" }]
+    "note": "elevenlabs_tts has no voice parameter; the voice comes from the server default (premade 'Sarah', EXAVITQu4vr4xnSDxMaL) or the ELEVENLABS_VOICE_ID env var. Free-tier API keys can ONLY use premade voices — a Voice Library (community/professional) voice returns HTTP 402 paid_plan_required.",
+    "planning": [{ "voice": "default", "description": "premade 'Sarah' (free-tier safe)" }],
+    "issue": [{ "voice": "default", "description": "premade 'Sarah' (free-tier safe)" }],
+    "summary": [{ "voice": "default", "description": "premade 'Sarah' (free-tier safe)" }]
   }
 }

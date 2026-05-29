@@ -1,9 +1,9 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
-# Install the speak skill to ~/.agents/skills/ and symlink to supported agents
+# Install the `speak` skill to ~/.agents/skills — the shared Agent Skills
+# location that Claude Code, Codex CLI, and Gemini CLI all auto-discover.
 #
-
-set -e
+set -euo pipefail
 
 SKILL_NAME="speak"
 REPO_URL="https://github.com/blacktop/mcp-tts.git"
@@ -20,71 +20,48 @@ NC='\033[0m' # No Color
 info() { echo -e "${BLUE}==>${NC} $1"; }
 success() { echo -e "${GREEN}==>${NC} $1"; }
 warn() { echo -e "${YELLOW}==>${NC} $1"; }
-error() { echo -e "${RED}==>${NC} $1"; exit 1; }
+error() {
+	echo -e "${RED}==>${NC} $1"
+	exit 1
+}
 
-# Check if running from cloned repo or standalone
+# Locate the skill source: this repo if run from a clone, else clone it.
 if [[ -f "$SCRIPT_DIR/skill/SKILL.md" ]]; then
-    SKILL_SOURCE="$SCRIPT_DIR/skill"
-    info "Installing from local repo: $SCRIPT_DIR"
+	SKILL_SOURCE="$SCRIPT_DIR/skill"
+	info "Installing from local repo: $SCRIPT_DIR"
 else
-    info "Cloning $REPO_URL..."
-    TMP_DIR=$(mktemp -d)
-    trap "rm -rf $TMP_DIR" EXIT
-    git clone --depth 1 "$REPO_URL" "$TMP_DIR" 2>/dev/null
-    SKILL_SOURCE="$TMP_DIR/skill"
+	info "Cloning $REPO_URL..."
+	TMP_DIR="$(mktemp -d)"
+	trap 'rm -rf "$TMP_DIR"' EXIT
+	git clone --depth 1 "$REPO_URL" "$TMP_DIR" >/dev/null 2>&1 || error "git clone failed"
+	SKILL_SOURCE="$TMP_DIR/skill"
 fi
 
-# Create shared skills directory
-info "Creating $AGENTS_DIR..."
+[[ -f "$SKILL_SOURCE/SKILL.md" ]] || error "skill/SKILL.md not found in $SKILL_SOURCE"
+
+# Install to the shared cross-agent location. Claude Code, Codex CLI, and
+# Gemini CLI all auto-discover ~/.agents/skills, so no per-agent symlinks are
+# needed.
 mkdir -p "$AGENTS_DIR"
+DEST="$AGENTS_DIR/$SKILL_NAME"
 
-# Copy skill to shared location
-if [[ -d "$AGENTS_DIR/$SKILL_NAME" ]]; then
-    warn "Skill already exists at $AGENTS_DIR/$SKILL_NAME"
-    read -p "Overwrite? [y/N] " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        error "Aborted"
-    fi
-    rm -rf "$AGENTS_DIR/$SKILL_NAME"
+if [[ -e "$DEST" || -L "$DEST" ]]; then
+	warn "Skill already exists at $DEST"
+	if [[ -t 0 ]]; then
+		read -r -p "Overwrite? [y/N] " reply
+	else
+		reply="y" # non-interactive (piped) install: overwrite
+	fi
+	[[ "$reply" =~ ^[Yy]$ ]] || error "Aborted"
+	rm -rf "${DEST:?DEST must be set}"
 fi
 
-info "Copying skill to $AGENTS_DIR/$SKILL_NAME..."
-cp -r "$SKILL_SOURCE" "$AGENTS_DIR/$SKILL_NAME"
-success "Skill installed to $AGENTS_DIR/$SKILL_NAME"
-
-# Symlink to agents
-declare -A AGENT_DIRS=(
-    ["Claude Code"]="$HOME/.claude/skills"
-    ["Codex CLI"]="$HOME/.codex/skills"
-    ["Gemini CLI"]="$HOME/.gemini/skills"
-)
+info "Copying skill to $DEST..."
+cp -R "$SKILL_SOURCE" "$DEST"
+success "Installed to $DEST"
 
 echo
-info "Creating symlinks to agents..."
-
-for agent in "${!AGENT_DIRS[@]}"; do
-    target_dir="${AGENT_DIRS[$agent]}"
-    target_link="$target_dir/$SKILL_NAME"
-
-    # Create agent skills directory if it doesn't exist
-    mkdir -p "$target_dir"
-
-    # Remove existing symlink or directory
-    if [[ -L "$target_link" ]]; then
-        rm "$target_link"
-    elif [[ -d "$target_link" ]]; then
-        warn "$agent: $target_link exists and is not a symlink, skipping"
-        continue
-    fi
-
-    # Create symlink
-    ln -sf "$AGENTS_DIR/$SKILL_NAME" "$target_link"
-    success "$agent: $target_link -> $AGENTS_DIR/$SKILL_NAME"
-done
-
-echo
-success "Done! The '$SKILL_NAME' skill is now available in:"
-echo "  - Claude Code: /speak or auto-triggered"
-echo "  - Codex CLI: restart to load"
-echo "  - Gemini CLI: enable skills in /settings"
+success "Done. The '$SKILL_NAME' skill is now discoverable by any agent that scans ~/.agents/skills:"
+echo "  - Claude Code: use /speak or auto-trigger"
+echo "  - Codex CLI:   restart to load"
+echo "  - Gemini CLI:  run /skills reload"
