@@ -64,6 +64,11 @@ var (
 	// playback runs under this context so a cancelled tool request (client
 	// timeout or end-of-turn teardown) cannot truncate in-flight speech.
 	serverCtx context.Context
+	// playbackWG tracks in-flight background playback so a clean shutdown
+	// (stdin EOF / client disconnect) can wait for it to finish instead of
+	// cutting off detached audio — e.g. a one-shot `cat msgs.jsonl | mcp-tts`
+	// or a final notification right before the session ends.
+	playbackWG sync.WaitGroup
 	// Global TTS mutex to prevent concurrent speech
 	ttsMutex sync.Mutex
 	// Flag to enable/disable sequential TTS (default: true)
@@ -149,7 +154,7 @@ func resampleToSpeaker(streamer beep.Streamer, from beep.SampleRate) beep.Stream
 // playback function receives serverCtx, so a cancelled or timed-out tool
 // request cannot truncate the audio; only server shutdown stops it.
 func playInBackground(label string, play func(ctx context.Context)) {
-	go func() {
+	playbackWG.Go(func() {
 		release, err := acquireTTSLock(serverCtx)
 		if err != nil {
 			log.Debug("Background playback aborted before acquiring TTS lock", "label", label, "error", err)
@@ -157,7 +162,7 @@ func playInBackground(label string, play func(ctx context.Context)) {
 		}
 		defer release()
 		play(serverCtx)
-	}()
+	})
 }
 
 // playStreamer plays a beep streamer and blocks until playback finishes or ctx
@@ -546,7 +551,10 @@ Designed to be used with the MCP (Model Context Protocol).`,
 
 			voiceID := os.Getenv("ELEVENLABS_VOICE_ID")
 			if voiceID == "" {
-				voiceID = "1SM7GgM6IMuvQlz2BwM3"
+				// "Sarah", a premade voice usable on the free tier. Library
+				// (community/professional) voices return 402 paid_plan_required
+				// for free accounts, so the default must be a premade voice.
+				voiceID = "EXAVITQu4vr4xnSDxMaL"
 				log.Debug("Voice not specified, using default", "voiceID", voiceID)
 			}
 
@@ -1011,8 +1019,16 @@ Designed to be used with the MCP (Model Context Protocol).`,
 		// cancelled on shutdown, which also stops any in-flight background
 		// playback.
 		if err := ctrlc.Default.Run(serverCtx, func() error {
-			if err := s.Run(serverCtx, &mcp.StdioTransport{}); err != nil {
-				return fmt.Errorf("failed to serve MCP: %v", err)
+			runErr := s.Run(serverCtx, &mcp.StdioTransport{})
+			// Transport closed (one-shot pipe or client disconnect): let any
+			// detached playback finish before exiting so audio isn't cut off.
+			// Ctrl-C cancels serverCtx, which stops playback and drains this.
+			log.Debug("Transport closed; waiting for in-flight playback")
+			playbackWG.Wait()
+			// A closed stdio transport (EOF) is the normal end of a session,
+			// not a failure — only surface genuine serve errors.
+			if runErr != nil && !errors.Is(runErr, io.EOF) {
+				return fmt.Errorf("failed to serve MCP: %v", runErr)
 			}
 			return nil
 		}); err != nil {

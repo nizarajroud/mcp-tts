@@ -169,10 +169,13 @@ func (m *ttsMutexFile) isStale() bool {
 		// Corrupt JSON: fall through to age heuristic below.
 	}
 
-	// No readable/valid metadata: use directory age as a conservative heuristic.
-	// Give plenty of time in case another process just created the dir but
-	// hasn't written content yet.
-	const grace = 5 * time.Minute
+	// No readable/valid metadata: the owner either died in the microsecond
+	// window between Mkdir and writing content.json, or was SIGKILLed mid
+	// release (content removed, dir not). content.json is written immediately
+	// after Mkdir, so a missing/corrupt one after a short grace means the owner
+	// is gone — reclaim it. A long grace here would silently block all playback
+	// (fire-and-forget surfaces no error) until it expires.
+	const grace = 10 * time.Second
 	if fi, err := os.Stat(m.lockDir); err == nil {
 		return time.Since(fi.ModTime()) > grace
 	}

@@ -176,7 +176,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
       "command": "mcp-tts",
       "env": {
         "ELEVENLABS_API_KEY": "********",
-        "ELEVENLABS_VOICE_ID": "1SM7GgM6IMuvQlz2BwM3",
+        "ELEVENLABS_VOICE_ID": "EXAVITQu4vr4xnSDxMaL",
         "GOOGLE_AI_API_KEY": "********",
         "OPENAI_API_KEY": "********",
         "OPENAI_TTS_INSTRUCTIONS": "Speak in a cheerful and positive tone",
@@ -235,7 +235,7 @@ Or manually add to `~/.gemini/settings.json` (or `.gemini/settings.json` in proj
 #### Environment Variables
 
 - `ELEVENLABS_API_KEY`: Your ElevenLabs API key (required for `elevenlabs_tts`)
-- `ELEVENLABS_VOICE_ID`: ElevenLabs voice ID (optional, defaults to a built-in voice)
+- `ELEVENLABS_VOICE_ID`: ElevenLabs voice ID (optional, defaults to the premade "Sarah" voice `EXAVITQu4vr4xnSDxMaL`). Free-tier API keys can only use **premade** voices — Voice Library (community/professional) voices return `402 paid_plan_required`.
 - `GOOGLE_AI_API_KEY` or `GEMINI_API_KEY`: Your Google AI API key (required for `google_tts`)
 - `OPENAI_API_KEY`: Your OpenAI API key (required for `openai_tts`)
 - `OPENAI_TTS_INSTRUCTIONS`: Custom voice instructions for OpenAI TTS (optional, e.g., "Speak in a cheerful and positive tone")
