@@ -148,21 +148,56 @@ func resampleToSpeaker(streamer beep.Streamer, from beep.SampleRate) beep.Stream
 	return beep.Resample(4, from, speakerSampleRate, streamer)
 }
 
-// playInBackground runs an audio-playback function detached from the request
-// that triggered it. The TTS lock is acquired inside the goroutine — so the
-// tool handler can return immediately — and held until playback finishes. The
-// playback function receives serverCtx, so a cancelled or timed-out tool
-// request cannot truncate the audio; only server shutdown stops it.
-func playInBackground(label string, play func(ctx context.Context)) {
+// playInBackground acquires the TTS lock synchronously, then runs the playback
+// function detached from the request that triggered it. This surfaces lock
+// acquisition failures to the caller while still letting playback outlive a
+// cancelled or timed-out tool request.
+func playInBackground(label string, play func(ctx context.Context)) error {
+	release, err := acquireTTSLock(serverCtx)
+	if err != nil {
+		return fmt.Errorf("failed to acquire TTS lock: %w", err)
+	}
+
 	playbackWG.Go(func() {
-		release, err := acquireTTSLock(serverCtx)
-		if err != nil {
-			log.Debug("Background playback aborted before acquiring TTS lock", "label", label, "error", err)
-			return
-		}
 		defer release()
+		log.Debug("Starting background playback", "label", label)
 		play(serverCtx)
 	})
+	return nil
+}
+
+func startSayPlayback(playArgs []string, savedPath, text string) error {
+	release, err := acquireTTSLock(serverCtx)
+	if err != nil {
+		return fmt.Errorf("failed to acquire TTS lock: %w", err)
+	}
+
+	cmd := exec.CommandContext(serverCtx, "/usr/bin/say", playArgs...)
+	log.Debug("Starting say command", "args", playArgs)
+	if err := cmd.Start(); err != nil {
+		release()
+		return fmt.Errorf("failed to start say command: %w", err)
+	}
+
+	playbackWG.Go(func() {
+		defer release()
+		if err := cmd.Wait(); err != nil {
+			if serverCtx.Err() == nil {
+				log.Error("Say command failed", "error", err)
+			}
+			return
+		}
+		// say -o wrote the file without playing; play it now.
+		if savedPath != "" {
+			log.Debug("Playing saved AIFF file", "path", savedPath)
+			if err := exec.CommandContext(serverCtx, "afplay", savedPath).Run(); err != nil && serverCtx.Err() == nil {
+				log.Warn("Failed to play saved audio", "error", err)
+			}
+		}
+		log.Info("Speaking text completed", "text", text)
+	})
+
+	return nil
 }
 
 // playStreamer plays a beep streamer and blocks until playback finishes or ctx
@@ -190,12 +225,15 @@ func playMP3(label string, audioData []byte) error {
 		streamer.Close()
 		return fmt.Errorf("failed to initialize speaker: %w", err)
 	}
-	playInBackground(label, func(ctx context.Context) {
+	if err := playInBackground(label, func(ctx context.Context) {
 		defer streamer.Close()
 		log.Info("Speaking text", "label", label)
 		playStreamer(ctx, resampleToSpeaker(streamer, format.SampleRate))
 		log.Debug("Finished speaking", "label", label)
-	})
+	}); err != nil {
+		streamer.Close()
+		return err
+	}
 	return nil
 }
 
@@ -207,11 +245,13 @@ func playPCM(label string, audioData []byte, sampleRate int) error {
 	if err := initSpeaker(stream.sampleRate); err != nil {
 		return fmt.Errorf("failed to initialize speaker: %w", err)
 	}
-	playInBackground(label, func(ctx context.Context) {
+	if err := playInBackground(label, func(ctx context.Context) {
 		log.Info("Speaking text", "label", label)
 		playStreamer(ctx, resampleToSpeaker(stream, stream.sampleRate))
 		log.Debug("Finished speaking", "label", label)
-	})
+	}); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -553,9 +593,10 @@ Designed to be used with the MCP (Model Context Protocol).`,
 					return textResult(formatSaveResult(text, savedPath, false)), nil, nil
 				}
 
-				// Play mode: detach playback so a cancelled/timed-out request
-				// cannot truncate speech. The saved path (if any) is
-				// deterministic, so we can report it before the file exists.
+				// Play mode: acquire the speech lock and start `say` before
+				// returning so start/lock failures surface to the caller. The
+				// process is then waited in the background so request
+				// cancellation cannot truncate speech.
 				var savedPath string
 				playArgs := append([]string{}, args...)
 				if shouldSave() {
@@ -565,23 +606,10 @@ Designed to be used with the MCP (Model Context Protocol).`,
 				}
 				playArgs = append(playArgs, text)
 
-				playInBackground("say_tts", func(ctx context.Context) {
-					log.Debug("Executing say command", "args", playArgs)
-					if err := exec.CommandContext(ctx, "/usr/bin/say", playArgs...).Run(); err != nil {
-						if ctx.Err() == nil {
-							log.Error("Say command failed", "error", err)
-						}
-						return
-					}
-					// say -o wrote the file without playing; play it now.
-					if savedPath != "" {
-						log.Debug("Playing saved AIFF file", "path", savedPath)
-						if err := exec.CommandContext(ctx, "afplay", savedPath).Run(); err != nil && ctx.Err() == nil {
-							log.Warn("Failed to play saved audio", "error", err)
-						}
-					}
-					log.Info("Speaking text completed", "text", text)
-				})
+				if err := startSayPlayback(playArgs, savedPath, text); err != nil {
+					log.Error("Failed to start say playback", "error", err)
+					return errorResult(fmt.Sprintf("Error: %v", err)), nil, nil
+				}
 
 				return textResult(formatSaveResult(text, savedPath, true)), nil, nil
 			})
