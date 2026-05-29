@@ -301,7 +301,7 @@ cat test/sequential.json | go run main.go --verbose --sequential-tts=false
 
 ## Skill: `speak`
 
-This repo includes a **speak** skill that automatically announces plans, issues, and summaries aloud using TTS. Each project gets a unique voice so you can identify which project is speaking from another room.
+This repo includes a **speak** skill that automatically announces plans, issues, and summaries aloud using TTS. It defaults to the host's macOS `say` voice, and can optionally assign distinct voices per project or message type so you can identify what is speaking from another room.
 
 Skills follow the [Agent Skills](https://agentskills.io) open standard and work across Claude Code, Codex CLI, and Gemini CLI.
 
@@ -392,7 +392,7 @@ The skill triggers automatically after:
 - **Issue resolved** - When a bug fix or error is resolved
 - **Summary generated** - When completing a major task
 
-Providers fallback in order: `google` → `openai` → `elevenlabs` → `say` (macOS). If a provider fails due to missing API keys, it's marked unavailable and skipped in future attempts.
+By default, the skill uses local `say_tts` without probing credentials. If a saved config or user choice selects cloud TTS, providers fall back in order: `google` → `openai` → `elevenlabs` → `say` (macOS). If a cloud provider fails due to missing API keys, it's marked unavailable and skipped in future attempts. For local `say` identity, the skill can pick exact installed Premium, Enhanced, or legacy voices from `/usr/bin/say -v '?'`; if no explicit voice is chosen, it leaves `voice` unset so the host System Voice is used.
 
 ## License
 

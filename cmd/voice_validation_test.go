@@ -34,7 +34,6 @@ func TestVoiceValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Test the validation logic that was in the original code
 			isValid := validateVoiceCharacters(tt.voice)
 
 			if tt.shouldPass && !isValid {
@@ -46,11 +45,9 @@ func TestVoiceValidation(t *testing.T) {
 	}
 }
 
-// validateVoiceCharacters mimics the updated validation logic from root.go
 func validateVoiceCharacters(voice string) bool {
 	for _, r := range voice {
-		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') ||
-			r == ' ' || r == '(' || r == ')' || r == '-' || r == '_') {
+		if !isAllowedSayVoiceRune(r) {
 			return false
 		}
 	}

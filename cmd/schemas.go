@@ -34,7 +34,7 @@ func buildSayTTSSchema() json.RawMessage {
 				// enum would reject installed voices and offer un-downloaded ones.
 				// The handler validates the name and checks IsVoiceInstalled.
 				"type":        "string",
-				"description": "Voice to use for speech synthesis (e.g. 'Samantha', 'Alex', 'Daniel'). Leave unset to use the system default voice. Note: some Premium/Enhanced voices must be downloaded in System Settings before they produce audio.",
+				"description": "Voice to use for speech synthesis (e.g. 'Samantha', 'Alex', 'Daniel'). Leave unset to use the host's configured System Voice.",
 			},
 		},
 		"required": []string{"text"},

@@ -1,13 +1,13 @@
 ---
 name: speak
-description: Announces plans, issues, and summaries out loud using TTS. Use this skill PROACTIVELY after completing major tasks like finalizing a plan, resolving an issue, or generating a summary. Defaults to the local macOS `say` voice (zero config, always works); optional per-project cloud voices (google, openai, elevenlabs) give each project a distinct voice when their API keys are configured.
+description: Announces plans, issues, and summaries out loud using TTS. Use this skill PROACTIVELY after completing major tasks like finalizing a plan, resolving an issue, or generating a summary. Defaults to the local macOS `say` voice (zero config, always works); optional per-project voices from installed `say` voices or cloud providers (google, openai, elevenlabs) can distinguish projects and message types.
 ---
 
 # Speak
 
 Announce plans, issues, and summaries aloud. Triggered automatically after major milestones.
 
-The default path is **zero-config**: call `say_tts` (macOS, no API key, always works). Cloud voices are an optional enhancement — used only when their API keys are present and a distinct per-project voice is wanted. Do not build config or try cloud providers when there are no cloud keys.
+The default path is **zero-config**: call `say_tts` (macOS, no API key, always works) with `voice` unset. Explicit installed `say` voices and cloud voices are optional enhancements when distinct per-project or per-message identity is wanted. Do not build cloud config or try cloud providers unless a saved config or the user selects one.
 
 ## When to Announce
 
@@ -41,25 +41,22 @@ Determine the label once and cache it as `speaker` in `.claude/tts-config.json`:
 
 Keep the preamble short — it is spoken before every announcement. Good: "mcp-tts says: ...", "On the auth service, ...", "Claude on project X: ...". This identifies the source even when several projects share the same `say` voice.
 
-## Choosing a Provider (fail fast — never probe-and-fail)
+## Choosing a Provider (fail fast — never probe secrets)
 
-Pick the provider **once**, cheaply. Do NOT call each cloud provider and wait for it to fail.
+Pick the provider **once**, cheaply. Do not inspect environment variables or shell startup files to discover credentials, and do not call every cloud provider just to see which one fails.
 
 1. **Reuse a saved choice** - if `.claude/tts-config.json` exists, use it and skip detection.
-2. **Detect configured cloud keys with one command:**
-   ```bash
-   env | grep -E '^(GOOGLE_AI_API_KEY|GEMINI_API_KEY|OPENAI_API_KEY|ELEVENLABS_API_KEY)=' | sed 's/=.*//'
-   ```
-3. **No cloud keys printed → use `say_tts` directly.** No config file, no fallback chain. This is the common case and must be instant.
-4. **Cloud keys printed → use the first configured provider** (preference: google, then openai, then elevenlabs), with `say_tts` as the final fallback. Optionally assign a per-project voice (see Voice Identity).
-5. **Persist the choice** in `.claude/tts-config.json` so later announcements skip detection.
+2. **No saved choice -> use `say_tts` directly.** Leave `voice` unset unless Voice Identity has intentionally assigned exact installed `say` voices. This is the common case and must be instant.
+3. **Use a cloud provider only when the user or saved config selects one.** Preference is google, then openai, then elevenlabs, with `say_tts` as the final fallback. Optionally assign per-message voices (see Voice Identity).
+4. **On cloud auth/config errors, fall back.** Mark that provider unavailable in `.claude/tts-config.json` and use the next saved provider or `say_tts`.
+5. **Persist intentional choices** in `.claude/tts-config.json` so later announcements skip detection.
 
-Only attempt a provider whose key was confirmed present. `say_tts` always works as the last resort.
+`say_tts` always works as the last resort and does not require credential discovery.
 
 ## Workflow
 
 1. Detect the message type — planning, issue, summary, or question (input needed).
-2. Pick the provider (above) — cached from `.claude/tts-config.json` if present, else detect once.
+2. Pick the provider (above) — cached from `.claude/tts-config.json` if present, else use `say_tts`.
 3. Transform the text to speech-friendly form (see Text Transformation), and prepend the speaker label (see Identify the Speaker).
 4. Call the chosen TTS tool. On error, fall back per the Error Handling table; `say_tts` is the guaranteed final step.
 
@@ -116,7 +113,8 @@ mcp__mcp-tts__say_tts
 - rate: integer (50-500; recommended 200-250; default 200)
 ```
 - Prefer leaving `voice` unset to use the system default — it usually sounds most natural.
-- **macOS Tahoe caveat:** the selected default system voice can be a *downloadable* Premium/Enhanced voice that is not on disk, which produces **no audio while still exiting cleanly**. If `say_tts` is silent, pass a known on-disk legacy voice such as `voice: "Samantha"` (verify with `say -v '?'`), or download the default voice in System Settings → Accessibility → Spoken Content.
+- A bare `say` command uses the host's configured System Voice, which can be a Siri voice. Do not set a fallback voice merely because `voice` is absent.
+- If Voice Identity intentionally chooses a `say` voice, pass only an exact installed name from `/usr/bin/say -v '?'`.
 - Rate hard limit is 50-500; keep 200-250 for comfortable listening, go higher only when the user explicitly asks.
 
 ### google_tts (cloud, preferred when configured)
@@ -147,15 +145,22 @@ mcp__mcp-tts__elevenlabs_tts
 - Voice/model are not tool parameters; they come from the server defaults (premade "Sarah") or the `ELEVENLABS_VOICE_ID` / `ELEVENLABS_MODEL_ID` env vars.
 - **Free-tier API keys can only use premade voices.** A Voice Library (community/professional) voice returns HTTP 402 `paid_plan_required` — handle per the Error Handling table.
 
-## Voice Identity (optional, cloud only)
+## Voice Identity (optional, cloud or explicit say voices)
 
-Skip this unless cloud keys are configured **and** distinct per-project voices are wanted. It exists so each project "speaks" with a recognizable voice from another room.
+Skip this unless distinct per-project or per-message voices are wanted. It exists so each project and message type can be recognized from another room.
 
-To assign on first cloud use:
+For cloud providers:
 1. Read `references/voice-pools.json` for candidate voices per provider and message type.
 2. Check `~/.claude/tts-assignments.json` for voices already used by other projects (avoid reuse).
 3. Pick one voice per message type (planning/issue/summary) from the configured provider's pool.
 4. Save to `.claude/tts-config.json` and record in `~/.claude/tts-assignments.json`.
+
+For macOS `say`:
+1. Run `/usr/bin/say -v '?'` and parse the exact installed voice names.
+2. Prefer installed Premium voices first, then Enhanced voices, then stable legacy voices such as `Samantha` or `Alex`.
+3. Choose different voices for `planning`, `issue`/`question`, and `summary` only when good matches exist.
+4. If a message type has no good installed candidate, leave `voice` unset for that type so the host System Voice is used.
+5. Do not infer that the host default is broken, and do not replace an unset voice as a fallback. Passing a voice is an intentional identity choice only.
 
 Example `.claude/tts-config.json`:
 ```json

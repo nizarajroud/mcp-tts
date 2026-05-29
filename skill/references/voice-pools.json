@@ -77,11 +77,32 @@
     ]
   },
   "say": {
-    "note": "say_tts accepts any installed macOS voice (list them with `say -v '?'`); there is no fixed enum. Prefer leaving voice unset to use the system default. CAUTION (macOS Tahoe): the default system voice may be a downloadable Premium/Enhanced voice that is not on disk and produces NO audio while exiting cleanly. If say is silent, pass a known on-disk legacy voice such as 'Samantha' or 'Alex', or download the default voice in System Settings.",
+    "note": "say_tts accepts any installed macOS voice (list them with `say -v '?'`); there is no fixed enum. Prefer leaving voice unset to use the host's configured System Voice. A bare `say` command can use a Siri voice, so do not set a fallback voice unless the user explicitly asks. Candidate voices below are examples; use only exact names returned by `/usr/bin/say -v '?'`.",
+    "selection_strategy": [
+      "Use voice: null by default.",
+      "For explicit voice identity, prefer installed names containing (Premium), then (Enhanced), then stable legacy voices.",
+      "Assign different voices by message type only when the exact candidate is installed.",
+      "If no good candidate is installed for a message type, keep voice: null for that type."
+    ],
     "recommended_rate": "200-250 (hard limit 50-500; go above 300 only if the user requests faster)",
-    "planning": [{ "voice": null, "description": "system default - recommended" }],
-    "issue": [{ "voice": null, "description": "system default - recommended" }],
-    "summary": [{ "voice": null, "description": "system default - recommended" }]
+    "planning": [
+      { "voice": null, "description": "host System Voice - default" },
+      { "voice": "Serena (Premium)", "description": "premium, calm planning" },
+      { "voice": "Ava (Enhanced)", "description": "enhanced, organized" },
+      { "voice": "Samantha", "description": "legacy, steady" }
+    ],
+    "issue": [
+      { "voice": null, "description": "host System Voice - default" },
+      { "voice": "Zoe (Premium)", "description": "premium, alert" },
+      { "voice": "Alex", "description": "legacy, direct" },
+      { "voice": "Daniel", "description": "legacy, serious" }
+    ],
+    "summary": [
+      { "voice": null, "description": "host System Voice - default" },
+      { "voice": "Allison (Enhanced)", "description": "enhanced, warm" },
+      { "voice": "Victoria", "description": "legacy, polished" },
+      { "voice": "Samantha", "description": "legacy, clear" }
+    ]
   },
   "elevenlabs": {
     "note": "elevenlabs_tts has no voice parameter; the voice comes from the server default (premade 'Sarah', EXAVITQu4vr4xnSDxMaL) or the ELEVENLABS_VOICE_ID env var. Free-tier API keys can ONLY use premade voices — a Voice Library (community/professional) voice returns HTTP 402 paid_plan_required.",

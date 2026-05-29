@@ -158,6 +158,59 @@ func TestSayTTSTool(t *testing.T) {
 	}
 }
 
+func TestSayCommandArgsLeavesVoiceUnset(t *testing.T) {
+	tests := []struct {
+		name  string
+		voice *string
+	}{
+		{name: "default nil voice"},
+		{name: "empty voice", voice: stringPtr("")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args, result := sayCommandArgs(SayTTSParams{
+				Text:  "hello",
+				Voice: tt.voice,
+			})
+
+			require.Nil(t, result)
+			assert.Equal(t, []string{"--rate", fmt.Sprintf("%d", DefaultSayRate)}, args)
+			assert.NotContains(t, args, "--voice")
+		})
+	}
+}
+
+func TestSayCommandArgsRejectsInvalidVoiceCharacters(t *testing.T) {
+	args, result := sayCommandArgs(SayTTSParams{
+		Text:  "hello",
+		Voice: stringPtr("Alex; touch /tmp/nope"),
+	})
+
+	assert.Nil(t, args)
+	require.NotNil(t, result)
+	assert.True(t, result.IsError)
+	assert.Contains(t, extractTextFromMCPResult(result), "Voice contains invalid characters")
+}
+
+func TestSayCommandArgsRejectsNotInstalledVoice(t *testing.T) {
+	resetVoiceCache()
+	voiceCache.once.Do(func() {
+		voiceCache.voices = map[string]bool{"Alex": true}
+	})
+	t.Cleanup(resetVoiceCache)
+
+	args, result := sayCommandArgs(SayTTSParams{
+		Text:  "hello",
+		Voice: stringPtr("NonExistentVoice12345"),
+	})
+
+	assert.Nil(t, args)
+	require.NotNil(t, result)
+	assert.True(t, result.IsError)
+	assert.Contains(t, extractTextFromMCPResult(result), `Voice "NonExistentVoice12345" is not installed`)
+}
+
 func TestGoogleTTSTool(t *testing.T) {
 	// Set up test environment variables
 	originalAPIKey := os.Getenv("GOOGLE_AI_API_KEY")
@@ -627,11 +680,27 @@ func callElevenLabsTTSHandler(ctx context.Context, params *TestCallToolParams[El
 }
 
 func extractTextFromResult(result *TestCallToolResult) string {
-	if result == nil || len(result.Content) == 0 {
+	if result == nil {
 		return ""
 	}
 
-	if textContent, ok := result.Content[0].(*mcp.TextContent); ok {
+	return extractTextFromContent(result.Content)
+}
+
+func extractTextFromMCPResult(result *mcp.CallToolResult) string {
+	if result == nil {
+		return ""
+	}
+
+	return extractTextFromContent(result.Content)
+}
+
+func extractTextFromContent(content []mcp.Content) string {
+	if len(content) == 0 {
+		return ""
+	}
+
+	if textContent, ok := content[0].(*mcp.TextContent); ok {
 		return textContent.Text
 	}
 

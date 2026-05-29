@@ -255,6 +255,47 @@ func textResult(msg string) *mcp.CallToolResult {
 	}
 }
 
+func sayCommandArgs(input SayTTSParams) ([]string, *mcp.CallToolResult) {
+	rate := DefaultSayRate
+	if input.Rate != nil {
+		rate = *input.Rate
+	}
+	args := make([]string, 0, 4)
+	args = append(args, "--rate", fmt.Sprintf("%d", rate))
+
+	if input.Voice == nil || *input.Voice == "" {
+		return args, nil
+	}
+
+	voice := *input.Voice
+	for _, r := range voice {
+		if !isAllowedSayVoiceRune(r) {
+			return nil, errorResult(fmt.Sprintf("Error: Voice contains invalid characters: %s", voice))
+		}
+	}
+
+	installed, err := IsVoiceInstalled(voice)
+	if err != nil {
+		log.Warn("Failed to check voice availability", "error", err, "voice", voice)
+	} else if !installed {
+		return nil, errorResult(VoiceNotInstalledError(voice))
+	}
+
+	args = append(args, "--voice", voice)
+	return args, nil
+}
+
+func isAllowedSayVoiceRune(r rune) bool {
+	return (r >= 'a' && r <= 'z') ||
+		(r >= 'A' && r <= 'Z') ||
+		(r >= '0' && r <= '9') ||
+		r == ' ' ||
+		r == '(' ||
+		r == ')' ||
+		r == '-' ||
+		r == '_'
+}
+
 // Parameter types for tools with MCP schema descriptions for LLMs
 type SayTTSParams struct {
 	Text  string  `json:"text" mcp:"The text to speak aloud"`
@@ -480,30 +521,9 @@ Designed to be used with the MCP (Model Context Protocol).`,
 
 				// Build base args (rate + optional voice). Validation happens
 				// synchronously so the caller sees argument errors immediately.
-				args := []string{"--rate"}
-				if input.Rate != nil {
-					args = append(args, fmt.Sprintf("%d", *input.Rate))
-				} else {
-					args = append(args, fmt.Sprintf("%d", DefaultSayRate))
-				}
-
-				if input.Voice != nil && *input.Voice != "" {
-					voice := *input.Voice
-					for _, r := range voice {
-						if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') ||
-							r == ' ' || r == '(' || r == ')' || r == '-' || r == '_') {
-							return errorResult(fmt.Sprintf("Error: Voice contains invalid characters: %s", voice)), nil, nil
-						}
-					}
-
-					installed, err := IsVoiceInstalled(voice)
-					if err != nil {
-						log.Warn("Failed to check voice availability", "error", err, "voice", voice)
-					} else if !installed {
-						return errorResult(VoiceNotInstalledError(voice)), nil, nil
-					}
-
-					args = append(args, "--voice", voice)
+				args, validationResult := sayCommandArgs(input)
+				if validationResult != nil {
+					return validationResult, nil, nil
 				}
 
 				// Log potentially dangerous shell metacharacters (exec.Command is safe, but log for awareness)
