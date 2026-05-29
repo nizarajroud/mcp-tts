@@ -177,46 +177,50 @@ func playStreamer(ctx context.Context, streamer beep.Streamer) {
 	}
 }
 
-// playMP3InBackground decodes MP3 bytes and plays them detached from the
-// request, so a cancelled or timed-out tool call cannot truncate the audio.
-func playMP3InBackground(label string, audioData []byte) {
+// playMP3 decodes MP3 bytes and initializes the speaker synchronously — so a
+// corrupt/undecodable response or an unavailable audio device surfaces as an
+// error to the caller — then detaches the real-time playback so a cancelled or
+// timed-out tool call cannot truncate the audio.
+func playMP3(label string, audioData []byte) error {
+	streamer, format, err := mp3.Decode(io.NopCloser(bytes.NewReader(audioData)))
+	if err != nil {
+		return fmt.Errorf("failed to decode audio: %w", err)
+	}
+	if err := initSpeaker(format.SampleRate); err != nil {
+		streamer.Close()
+		return fmt.Errorf("failed to initialize speaker: %w", err)
+	}
 	playInBackground(label, func(ctx context.Context) {
-		streamer, format, err := mp3.Decode(io.NopCloser(bytes.NewReader(audioData)))
-		if err != nil {
-			log.Error("Failed to decode MP3 stream", "label", label, "error", err)
-			return
-		}
 		defer streamer.Close()
-		if err := initSpeaker(format.SampleRate); err != nil {
-			log.Error("Failed to initialize speaker", "label", label, "error", err)
-			return
-		}
 		log.Info("Speaking text", "label", label)
 		playStreamer(ctx, resampleToSpeaker(streamer, format.SampleRate))
 		log.Debug("Finished speaking", "label", label)
 	})
+	return nil
 }
 
-// playPCMInBackground plays raw 16-bit little-endian PCM samples detached from
-// the request, so a cancelled or timed-out tool call cannot truncate the audio.
-func playPCMInBackground(label string, audioData []byte, sampleRate int) {
+// playPCM initializes the speaker synchronously (surfacing an unavailable audio
+// device to the caller) then detaches real-time playback of raw 16-bit
+// little-endian PCM samples.
+func playPCM(label string, audioData []byte, sampleRate int) error {
+	stream := &PCMStream{data: audioData, sampleRate: beep.SampleRate(sampleRate)}
+	if err := initSpeaker(stream.sampleRate); err != nil {
+		return fmt.Errorf("failed to initialize speaker: %w", err)
+	}
 	playInBackground(label, func(ctx context.Context) {
-		stream := &PCMStream{data: audioData, sampleRate: beep.SampleRate(sampleRate)}
-		if err := initSpeaker(stream.sampleRate); err != nil {
-			log.Error("Failed to initialize speaker", "label", label, "error", err)
-			return
-		}
 		log.Info("Speaking text", "label", label)
 		playStreamer(ctx, resampleToSpeaker(stream, stream.sampleRate))
 		log.Debug("Finished speaking", "label", label)
 	})
+	return nil
 }
 
 // deliverAudio runs the save/play/result tail shared by the cloud TTS handlers,
 // which each produce a full audio buffer. It saves synchronously when enabled
 // (so the returned path is accurate and save errors surface), returns early in
-// no-play mode, otherwise detaches playback via play and returns immediately.
-func deliverAudio(text string, audioData []byte, save func([]byte, string) (string, error), play func()) (*mcp.CallToolResult, any, error) {
+// no-play mode, otherwise prepares playback synchronously via play (decode +
+// speaker init errors surface to the caller) which then detaches the audio.
+func deliverAudio(text string, audioData []byte, save func([]byte, string) (string, error), play func() error) (*mcp.CallToolResult, any, error) {
 	var savedPath string
 	if shouldSave() {
 		var err error
@@ -229,7 +233,10 @@ func deliverAudio(text string, audioData []byte, save func([]byte, string) (stri
 	if !shouldPlay() {
 		return textResult(formatSaveResult(text, savedPath, false)), nil, nil
 	}
-	play()
+	if err := play(); err != nil {
+		log.Error("Failed to start playback", "error", err)
+		return errorResult(fmt.Sprintf("Error: %v", err)), nil, nil
+	}
 	return textResult(formatSaveResult(text, savedPath, true)), nil, nil
 }
 
@@ -664,8 +671,8 @@ Designed to be used with the MCP (Model Context Protocol).`,
 			}
 			log.Debug("ElevenLabs audio received", "bytes", len(audioData))
 
-			return deliverAudio(text, audioData, saveMP3, func() {
-				playMP3InBackground("elevenlabs_tts", audioData)
+			return deliverAudio(text, audioData, saveMP3, func() error {
+				return playMP3("elevenlabs_tts", audioData)
 			})
 		})
 
@@ -766,7 +773,7 @@ Designed to be used with the MCP (Model Context Protocol).`,
 				return errorResult(fmt.Sprintf("Error: Failed to generate TTS audio: %v", err)), nil, nil
 			}
 
-			if len(response.Candidates) == 0 || len(response.Candidates[0].Content.Parts) == 0 {
+			if len(response.Candidates) == 0 || response.Candidates[0].Content == nil || len(response.Candidates[0].Content.Parts) == 0 {
 				log.Error("No audio data in TTS response")
 				return errorResult("Error: No audio data received from Google TTS"), nil, nil
 			}
@@ -784,7 +791,7 @@ Designed to be used with the MCP (Model Context Protocol).`,
 
 			return deliverAudio(text, audioData,
 				func(d []byte, t string) (string, error) { return saveWAV(d, googleTTSSampleRate, t) },
-				func() { playPCMInBackground("google_tts", audioData, googleTTSSampleRate) },
+				func() error { return playPCM("google_tts", audioData, googleTTSSampleRate) },
 			)
 		})
 
@@ -902,8 +909,8 @@ Designed to be used with the MCP (Model Context Protocol).`,
 			}
 			log.Debug("OpenAI TTS audio data received", "bytes", len(audioData))
 
-			return deliverAudio(text, audioData, saveMP3, func() {
-				playMP3InBackground("openai_tts", audioData)
+			return deliverAudio(text, audioData, saveMP3, func() error {
+				return playMP3("openai_tts", audioData)
 			})
 		})
 
