@@ -25,7 +25,7 @@ import (
 	"github.com/gopxl/beep/v2"
 )
 
-// PCMStream implements beep.StreamSeeker for playing raw PCM audio data
+// PCMStream implements beep.Streamer for playing raw 16-bit little-endian PCM audio data
 type PCMStream struct {
 	data       []byte
 	sampleRate beep.SampleRate
@@ -57,18 +57,5 @@ func (s *PCMStream) Stream(samples [][2]float64) (n int, ok bool) {
 }
 
 func (s *PCMStream) Err() error {
-	return nil
-}
-
-func (s *PCMStream) Len() int {
-	return len(s.data) / 2 // 16-bit samples
-}
-
-func (s *PCMStream) Position() int {
-	return s.position / 2
-}
-
-func (s *PCMStream) Seek(p int) error {
-	s.position = min(max(p*2, 0), len(s.data))
 	return nil
 }

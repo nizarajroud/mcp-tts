@@ -42,6 +42,11 @@ const (
 	DefaultOpenAIVoice = "alloy"
 	DefaultOpenAIModel = "gpt-4o-mini-tts-2025-12-15"
 	DefaultOpenAISpeed = 1.0
+	// DefaultElevenLabsVoiceID is "Sarah", a premade voice. Library
+	// (community/professional) voices return 402 for free-tier API keys, so the
+	// default must be a premade voice.
+	DefaultElevenLabsVoiceID = "EXAVITQu4vr4xnSDxMaL"
+	DefaultElevenLabsModel   = "eleven_v3"
 )
 
 // Voice and model lists shared by tool schemas (schemas.go) and

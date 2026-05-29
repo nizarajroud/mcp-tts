@@ -197,6 +197,42 @@ func playMP3InBackground(label string, audioData []byte) {
 	})
 }
 
+// playPCMInBackground plays raw 16-bit little-endian PCM samples detached from
+// the request, so a cancelled or timed-out tool call cannot truncate the audio.
+func playPCMInBackground(label string, audioData []byte, sampleRate int) {
+	playInBackground(label, func(ctx context.Context) {
+		stream := &PCMStream{data: audioData, sampleRate: beep.SampleRate(sampleRate)}
+		if err := initSpeaker(stream.sampleRate); err != nil {
+			log.Error("Failed to initialize speaker", "label", label, "error", err)
+			return
+		}
+		log.Info("Speaking text", "label", label)
+		playStreamer(ctx, resampleToSpeaker(stream, stream.sampleRate))
+		log.Debug("Finished speaking", "label", label)
+	})
+}
+
+// deliverAudio runs the save/play/result tail shared by the cloud TTS handlers,
+// which each produce a full audio buffer. It saves synchronously when enabled
+// (so the returned path is accurate and save errors surface), returns early in
+// no-play mode, otherwise detaches playback via play and returns immediately.
+func deliverAudio(text string, audioData []byte, save func([]byte, string) (string, error), play func()) (*mcp.CallToolResult, any, error) {
+	var savedPath string
+	if shouldSave() {
+		var err error
+		if savedPath, err = save(audioData, text); err != nil {
+			log.Error("Failed to save audio file", "error", err)
+			return errorResult(fmt.Sprintf("Error saving audio: %v", err)), nil, nil
+		}
+		log.Info("Audio saved", "path", savedPath)
+	}
+	if !shouldPlay() {
+		return textResult(formatSaveResult(text, savedPath, false)), nil, nil
+	}
+	play()
+	return textResult(formatSaveResult(text, savedPath, true)), nil, nil
+}
+
 // Helper functions for building tool results
 
 func errorResult(msg string) *mcp.CallToolResult {
@@ -465,8 +501,9 @@ Designed to be used with the MCP (Model Context Protocol).`,
 
 				// Log potentially dangerous shell metacharacters (exec.Command is safe, but log for awareness)
 				dangerousChars := []rune{';', '&', '|', '<', '>', '`', '$', '(', ')', '{', '}', '[', ']', '\\', '\'', '"', '\n', '\r'}
+				textBytes := []byte(text)
 				for _, char := range dangerousChars {
-					if bytes.ContainsRune([]byte(text), char) {
+					if bytes.ContainsRune(textBytes, char) {
 						log.Warn("Potentially dangerous character in text input", "char", string(char), "text", text)
 					}
 				}
@@ -551,16 +588,13 @@ Designed to be used with the MCP (Model Context Protocol).`,
 
 			voiceID := os.Getenv("ELEVENLABS_VOICE_ID")
 			if voiceID == "" {
-				// "Sarah", a premade voice usable on the free tier. Library
-				// (community/professional) voices return 402 paid_plan_required
-				// for free accounts, so the default must be a premade voice.
-				voiceID = "EXAVITQu4vr4xnSDxMaL"
+				voiceID = DefaultElevenLabsVoiceID
 				log.Debug("Voice not specified, using default", "voiceID", voiceID)
 			}
 
 			modelID := os.Getenv("ELEVENLABS_MODEL_ID")
 			if modelID == "" {
-				modelID = "eleven_v3"
+				modelID = DefaultElevenLabsModel
 				log.Debug("Model not specified, using default", "modelID", modelID)
 			}
 
@@ -630,22 +664,9 @@ Designed to be used with the MCP (Model Context Protocol).`,
 			}
 			log.Debug("ElevenLabs audio received", "bytes", len(audioData))
 
-			// Save MP3 if enabled (synchronously, so the path is accurate).
-			var savedPath string
-			if shouldSave() {
-				if savedPath, err = saveMP3(audioData, text); err != nil {
-					log.Error("Failed to save MP3 file", "error", err)
-					return errorResult(fmt.Sprintf("Error saving audio: %v", err)), nil, nil
-				}
-				log.Info("Audio saved", "path", savedPath)
-			}
-
-			if !shouldPlay() {
-				return textResult(formatSaveResult(text, savedPath, false)), nil, nil
-			}
-
-			playMP3InBackground("elevenlabs_tts", audioData)
-			return textResult(formatSaveResult(text, savedPath, true)), nil, nil
+			return deliverAudio(text, audioData, saveMP3, func() {
+				playMP3InBackground("elevenlabs_tts", audioData)
+			})
 		})
 
 		// Add Google TTS tool
@@ -761,39 +782,10 @@ Designed to be used with the MCP (Model Context Protocol).`,
 
 			const googleTTSSampleRate = 24000
 
-			// Save WAV file if enabled (synchronously, so the path is accurate).
-			var savedPath string
-			if shouldSave() {
-				var saveErr error
-				savedPath, saveErr = saveWAV(audioData, googleTTSSampleRate, text)
-				if saveErr != nil {
-					log.Error("Failed to save WAV file", "error", saveErr)
-					return errorResult(fmt.Sprintf("Error saving audio: %v", saveErr)), nil, nil
-				}
-				log.Info("Audio saved", "path", savedPath)
-			}
-
-			// Handle no-play mode: just save and return
-			if !shouldPlay() {
-				return textResult(formatSaveResult(text, savedPath, false)), nil, nil
-			}
-
-			log.Info("Speaking via Google TTS", "text", text, "voice", voice, "model", model)
-			playInBackground("google_tts", func(ctx context.Context) {
-				pcmStream := &PCMStream{
-					data:       audioData,
-					sampleRate: beep.SampleRate(googleTTSSampleRate),
-					position:   0,
-				}
-				if err := initSpeaker(pcmStream.sampleRate); err != nil {
-					log.Error("Failed to initialize speaker", "label", "google_tts", "error", err)
-					return
-				}
-				playStreamer(ctx, resampleToSpeaker(pcmStream, pcmStream.sampleRate))
-				log.Debug("Finished speaking via Google TTS")
-			})
-
-			return textResult(formatSaveResult(text, savedPath, true)), nil, nil
+			return deliverAudio(text, audioData,
+				func(d []byte, t string) (string, error) { return saveWAV(d, googleTTSSampleRate, t) },
+				func() { playPCMInBackground("google_tts", audioData, googleTTSSampleRate) },
+			)
 		})
 
 		// Add OpenAI TTS tool
@@ -910,31 +902,9 @@ Designed to be used with the MCP (Model Context Protocol).`,
 			}
 			log.Debug("OpenAI TTS audio data received", "bytes", len(audioData))
 
-			// Save MP3 file if enabled (synchronously, so the path is accurate).
-			var savedPath string
-			if shouldSave() {
-				var saveErr error
-				savedPath, saveErr = saveMP3(audioData, text)
-				if saveErr != nil {
-					log.Error("Failed to save MP3 file", "error", saveErr)
-					return errorResult(fmt.Sprintf("Error saving audio: %v", saveErr)), nil, nil
-				}
-				log.Info("Audio saved", "path", savedPath)
-			}
-
-			// Handle no-play mode: just save and return
-			if !shouldPlay() {
-				return textResult(formatSaveResult(text, savedPath, false)), nil, nil
-			}
-
-			logFields = []any{"text", text, "voice", voice, "model", model, "speed", speed}
-			if instructions != "" {
-				logFields = append(logFields, "instructions", instructions)
-			}
-			log.Info("Speaking text via OpenAI TTS", logFields...)
-
-			playMP3InBackground("openai_tts", audioData)
-			return textResult(formatSaveResult(text, savedPath, true)), nil, nil
+			return deliverAudio(text, audioData, saveMP3, func() {
+				playMP3InBackground("openai_tts", audioData)
+			})
 		})
 
 		// Add interactive TTS tool that uses elicitation to choose provider
