@@ -1,13 +1,13 @@
 ---
 name: speak
-description: Announces plans, issues, and summaries out loud using TTS. Use this skill PROACTIVELY after completing major tasks like finalizing a plan, resolving an issue, or generating a summary. Defaults to the local macOS `say` voice (zero config, always works); optional per-project voices from installed `say` voices or cloud providers (google, openai, elevenlabs) can distinguish projects and message types.
+description: Announces plans, issues, and summaries out loud using TTS. Use this skill PROACTIVELY after completing major tasks like finalizing a plan, resolving an issue, or generating a summary. Defaults to the local macOS `say` System Voice through `say_tts` (zero config, no explicit voice required); optional per-project voices from installed `say` voices or cloud providers (google, openai, elevenlabs) can distinguish projects and message types.
 ---
 
 # Speak
 
 Announce plans, issues, and summaries aloud. Triggered automatically after major milestones.
 
-The default path is **zero-config**: call `say_tts` (macOS, no API key, always works) with `voice` unset. Explicit installed `say` voices and cloud voices are optional enhancements when distinct per-project or per-message identity is wanted. Do not build cloud config or try cloud providers unless a saved config or the user selects one.
+The default path is **local and zero-key**: call `say_tts` (macOS, no API key) with `voice` unset so `/usr/bin/say` uses the host's configured System Voice. A plain terminal `say "text"` works this way too, and the MCP tool must preserve that behavior. Cloud voices and explicit installed `say` voices are optional enhancements when a saved config or the user selects them.
 
 ## When to Announce
 
@@ -51,7 +51,7 @@ Pick the provider **once**, cheaply. Do not inspect environment variables or she
 4. **On cloud auth/config errors, fall back.** Mark that provider unavailable in `.claude/tts-config.json` and use the next saved provider or `say_tts`.
 5. **Persist intentional choices** in `.claude/tts-config.json` so later announcements skip detection.
 
-`say_tts` always works as the last resort and does not require credential discovery.
+`say_tts` with `voice` unset is the guaranteed last resort and does not require credential discovery.
 
 ## Workflow
 
@@ -62,7 +62,7 @@ Pick the provider **once**, cheaply. Do not inspect environment variables or she
 
 ## Error Handling
 
-An announcement is best-effort — never let it block or derail the main task. On any failure, fall back; the final fallback (`say_tts`) needs no key.
+An announcement is best-effort — never let it block or derail the main task. On any failure, fall back; the final fallback (`say_tts` with `voice` unset) needs no key.
 
 | Error pattern | Action |
 |---------------|--------|
@@ -112,8 +112,8 @@ mcp__mcp-tts__say_tts
 - voice: string (optional; any installed macOS voice — see `say -v '?'`)
 - rate: integer (50-500; recommended 200-250; default 200)
 ```
-- Prefer leaving `voice` unset to use the system default — it usually sounds most natural.
-- A bare `say` command uses the host's configured System Voice, which can be a Siri voice. Do not set a fallback voice merely because `voice` is absent.
+- Prefer leaving `voice` unset to use the host's configured System Voice. This is required to preserve the same behavior as a plain terminal `say "text"` command, including Siri System Voices.
+- If `voice` unset is silent while plain `say "text"` works, treat that as an MCP server/process bug or stale server process, not as a reason to hardcode a downloaded voice.
 - If Voice Identity intentionally chooses a `say` voice, pass only an exact installed name from `/usr/bin/say -v '?'`.
 - Rate hard limit is 50-500; keep 200-250 for comfortable listening, go higher only when the user explicitly asks.
 

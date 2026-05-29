@@ -1,11 +1,11 @@
 package cmd
 
 type SynthesisOptions struct {
-	Stability       float64 `json:"stability,omitempty"`
-	SimilarityBoost float64 `json:"similarity_boost,omitempty"`
-	Style           float64 `json:"style,omitempty"`
-	UseSpeakerBoost bool    `json:"use_speaker_boost,omitempty"`
-	// Speed           float64 `json:"speed,omitempty"`
+	Stability       float64 `json:"stability,omitempty,omitzero"`
+	SimilarityBoost float64 `json:"similarity_boost,omitempty,omitzero"`
+	Style           float64 `json:"style,omitempty,omitzero"`
+	UseSpeakerBoost bool    `json:"use_speaker_boost,omitempty,omitzero"`
+	// Speed           float64 `json:"speed,omitempty,omitzero"`
 }
 
 type ElevenLabsParams struct {

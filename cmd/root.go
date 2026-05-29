@@ -339,8 +339,8 @@ func isAllowedSayVoiceRune(r rune) bool {
 // Parameter types for tools with MCP schema descriptions for LLMs
 type SayTTSParams struct {
 	Text  string  `json:"text" mcp:"The text to speak aloud"`
-	Rate  *int    `json:"rate,omitempty" mcp:"Speech rate in words per minute (50-500, default: 200)"`
-	Voice *string `json:"voice,omitempty" mcp:"Voice to use for speech synthesis (e.g. 'Alex', 'Samantha', 'Victoria')"`
+	Rate  *int    `json:"rate,omitempty,omitzero" mcp:"Speech rate in words per minute (50-500, default: 200)"`
+	Voice *string `json:"voice,omitempty,omitzero" mcp:"Voice to use for speech synthesis (e.g. 'Alex', 'Samantha', 'Victoria')"`
 }
 
 type ElevenLabsTTSParams struct {
@@ -349,16 +349,16 @@ type ElevenLabsTTSParams struct {
 
 type GoogleTTSParams struct {
 	Text  string  `json:"text" mcp:"The text to convert to speech using Google TTS"`
-	Voice *string `json:"voice,omitempty" mcp:"Voice name to use (e.g. 'Kore', 'Puck', 'Fenrir', etc. - see documentation for full list of 30 voices, default: 'Kore')"`
-	Model *string `json:"model,omitempty" mcp:"TTS model to use (gemini-3.1-flash-tts-preview, gemini-2.5-flash-preview-tts, gemini-2.5-pro-preview-tts, gemini-2.5-flash-lite-preview-tts; default: 'gemini-3.1-flash-tts-preview')"`
+	Voice *string `json:"voice,omitempty,omitzero" mcp:"Voice name to use (e.g. 'Kore', 'Puck', 'Fenrir', etc. - see documentation for full list of 30 voices, default: 'Kore')"`
+	Model *string `json:"model,omitempty,omitzero" mcp:"TTS model to use (gemini-3.1-flash-tts-preview, gemini-2.5-flash-preview-tts, gemini-2.5-pro-preview-tts, gemini-2.5-flash-lite-preview-tts; default: 'gemini-3.1-flash-tts-preview')"`
 }
 
 type OpenAITTSParams struct {
 	Text         string   `json:"text" mcp:"The text to convert to speech using OpenAI TTS"`
-	Voice        *string  `json:"voice,omitempty" mcp:"Voice to use (alloy, ash, ballad, coral, echo, fable, nova, onyx, sage, shimmer, verse; default: 'alloy')"`
-	Model        *string  `json:"model,omitempty" mcp:"TTS model to use (gpt-4o-mini-tts-2025-12-15, tts-1, tts-1-hd; default: 'gpt-4o-mini-tts-2025-12-15')"`
-	Speed        *float64 `json:"speed,omitempty" mcp:"Speech speed (0.25-4.0, default: 1.0)"`
-	Instructions *string  `json:"instructions,omitempty" mcp:"Instructions for voice modulation and style"`
+	Voice        *string  `json:"voice,omitempty,omitzero" mcp:"Voice to use (alloy, ash, ballad, coral, echo, fable, nova, onyx, sage, shimmer, verse; default: 'alloy')"`
+	Model        *string  `json:"model,omitempty,omitzero" mcp:"TTS model to use (gpt-4o-mini-tts-2025-12-15, tts-1, tts-1-hd; default: 'gpt-4o-mini-tts-2025-12-15')"`
+	Speed        *float64 `json:"speed,omitempty,omitzero" mcp:"Speech speed (0.25-4.0, default: 1.0)"`
+	Instructions *string  `json:"instructions,omitempty,omitzero" mcp:"Instructions for voice modulation and style"`
 }
 
 type TTSParams struct {

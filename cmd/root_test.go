@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -179,6 +180,97 @@ func TestSayCommandArgsLeavesVoiceUnset(t *testing.T) {
 			assert.NotContains(t, args, "--voice")
 		})
 	}
+}
+
+func TestSayJSONVoiceOptionality(t *testing.T) {
+	resetVoiceCache()
+	voiceCache.once.Do(func() {
+		voiceCache.voices = map[string]bool{"Alex": true}
+	})
+	t.Cleanup(resetVoiceCache)
+
+	tests := []struct {
+		name         string
+		input        string
+		wantVoiceNil bool
+		wantVoice    string
+		wantArgs     []string
+	}{
+		{
+			name:         "omitted voice",
+			input:        `{"text":"hello"}`,
+			wantVoiceNil: true,
+			wantArgs:     []string{"--rate", fmt.Sprintf("%d", DefaultSayRate)},
+		},
+		{
+			name:         "null voice",
+			input:        `{"text":"hello","voice":null}`,
+			wantVoiceNil: true,
+			wantArgs:     []string{"--rate", fmt.Sprintf("%d", DefaultSayRate)},
+		},
+		{
+			name:      "empty voice",
+			input:     `{"text":"hello","voice":""}`,
+			wantVoice: "",
+			wantArgs:  []string{"--rate", fmt.Sprintf("%d", DefaultSayRate)},
+		},
+		{
+			name:      "explicit voice",
+			input:     `{"text":"hello","voice":"Alex"}`,
+			wantVoice: "Alex",
+			wantArgs:  []string{"--rate", fmt.Sprintf("%d", DefaultSayRate), "--voice", "Alex"},
+		},
+		{
+			name:      "explicit rate with empty voice",
+			input:     `{"text":"hello","rate":220,"voice":""}`,
+			wantVoice: "",
+			wantArgs:  []string{"--rate", "220"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var input SayTTSParams
+			require.NoError(t, json.Unmarshal([]byte(tt.input), &input))
+
+			if tt.wantVoiceNil {
+				require.Nil(t, input.Voice)
+			} else {
+				require.NotNil(t, input.Voice)
+				assert.Equal(t, tt.wantVoice, *input.Voice)
+			}
+
+			args, result := sayCommandArgs(input)
+			require.Nil(t, result)
+			assert.Equal(t, tt.wantArgs, args)
+			if tt.wantVoice == "" {
+				assert.NotContains(t, args, "--voice")
+			}
+		})
+	}
+}
+
+func TestSayJSONOmitsZeroOptionalFields(t *testing.T) {
+	b, err := json.Marshal(SayTTSParams{Text: "hello"})
+	require.NoError(t, err)
+
+	assert.JSONEq(t, `{"text":"hello"}`, string(b))
+	assert.NotContains(t, string(b), "voice")
+	assert.NotContains(t, string(b), "rate")
+}
+
+func TestElevenLabsJSONOmitsZeroOptionalFields(t *testing.T) {
+	b, err := json.Marshal(ElevenLabsParams{
+		Text:          "hello",
+		VoiceSettings: SynthesisOptions{},
+	})
+	require.NoError(t, err)
+
+	assert.JSONEq(t, `{"text":"hello","voice_settings":{}}`, string(b))
+	assert.NotContains(t, string(b), "stability")
+	assert.NotContains(t, string(b), "similarity_boost")
+	assert.NotContains(t, string(b), "style")
+	assert.NotContains(t, string(b), "use_speaker_boost")
 }
 
 func TestSayCommandArgsRejectsInvalidVoiceCharacters(t *testing.T) {
