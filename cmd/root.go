@@ -46,7 +46,6 @@ import (
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 	"github.com/spf13/cobra"
-	"golang.org/x/sync/errgroup"
 	"google.golang.org/genai"
 )
 
@@ -57,6 +56,14 @@ var (
 	Version string
 	// Flag to suppress "Speaking:" output
 	suppressSpeakingOutput bool
+	// Flag to enable interactive elicitation prompts (default: false).
+	// Agents call tools with explicit arguments; elicitation interrupts that
+	// flow, so it is opt-in for interactive clients that want it.
+	elicitEnabled bool
+	// serverCtx is cancelled only when the MCP server shuts down. Audio
+	// playback runs under this context so a cancelled tool request (client
+	// timeout or end-of-turn teardown) cannot truncate in-flight speech.
+	serverCtx context.Context
 	// Global TTS mutex to prevent concurrent speech
 	ttsMutex sync.Mutex
 	// Flag to enable/disable sequential TTS (default: true)
@@ -136,87 +143,53 @@ func resampleToSpeaker(streamer beep.Streamer, from beep.SampleRate) beep.Stream
 	return beep.Resample(4, from, speakerSampleRate, streamer)
 }
 
-// progressReporter sends progress notifications to the client during audio playback
-type progressReporter struct {
-	session       *mcp.ServerSession
-	progressToken any
-	total         int
-	sampleRate    int
-	lastPercent   int
-	ctx           context.Context
-	cancel        context.CancelFunc
-	done          chan struct{}
-}
-
-// newProgressReporter creates a progress reporter if the client provided a progress token
-func newProgressReporter(ctx context.Context, req *mcp.CallToolRequest, total int, sampleRate int) *progressReporter {
-	if req == nil || req.Session == nil {
-		return nil
-	}
-	token := req.Params.GetProgressToken()
-	if token == nil {
-		return nil
-	}
-	prCtx, cancel := context.WithCancel(ctx)
-	return &progressReporter{
-		session:       req.Session,
-		progressToken: token,
-		total:         total,
-		sampleRate:    sampleRate,
-		lastPercent:   -1,
-		ctx:           prCtx,
-		cancel:        cancel,
-		done:          make(chan struct{}),
-	}
-}
-
-// start begins polling the position function and sending progress updates
-func (pr *progressReporter) start(getPosition func() int) {
-	if pr == nil {
-		return
-	}
+// playInBackground runs an audio-playback function detached from the request
+// that triggered it. The TTS lock is acquired inside the goroutine — so the
+// tool handler can return immediately — and held until playback finishes. The
+// playback function receives serverCtx, so a cancelled or timed-out tool
+// request cannot truncate the audio; only server shutdown stops it.
+func playInBackground(label string, play func(ctx context.Context)) {
 	go func() {
-		defer close(pr.done)
-		ticker := time.NewTicker(250 * time.Millisecond)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-pr.ctx.Done():
-				return
-			case <-ticker.C:
-				pos := getPosition()
-				percent := 0
-				if pr.total > 0 {
-					percent = (pos * 100) / pr.total
-				}
-				// Only send updates when percent changes (reduces noise)
-				if percent != pr.lastPercent {
-					pr.lastPercent = percent
-					durationSec := float64(pos) / float64(pr.sampleRate)
-					totalSec := float64(pr.total) / float64(pr.sampleRate)
-					msg := fmt.Sprintf("Playing: %.1fs / %.1fs", durationSec, totalSec)
-					if err := pr.session.NotifyProgress(pr.ctx, &mcp.ProgressNotificationParams{
-						ProgressToken: pr.progressToken,
-						Progress:      float64(pos),
-						Total:         float64(pr.total),
-						Message:       msg,
-					}); err != nil {
-						log.Debug("Failed to send progress notification", "error", err)
-					}
-				}
-			}
+		release, err := acquireTTSLock(serverCtx)
+		if err != nil {
+			log.Debug("Background playback aborted before acquiring TTS lock", "label", label, "error", err)
+			return
 		}
+		defer release()
+		play(serverCtx)
 	}()
 }
 
-// stop terminates the progress reporter
-func (pr *progressReporter) stop() {
-	if pr == nil {
-		return
+// playStreamer plays a beep streamer and blocks until playback finishes or ctx
+// is cancelled (server shutdown), clearing the speaker on cancellation.
+func playStreamer(ctx context.Context, streamer beep.Streamer) {
+	done := make(chan struct{})
+	speaker.Play(beep.Seq(streamer, beep.Callback(func() { close(done) })))
+	select {
+	case <-done:
+	case <-ctx.Done():
+		speaker.Clear()
 	}
-	pr.cancel()
-	<-pr.done
+}
+
+// playMP3InBackground decodes MP3 bytes and plays them detached from the
+// request, so a cancelled or timed-out tool call cannot truncate the audio.
+func playMP3InBackground(label string, audioData []byte) {
+	playInBackground(label, func(ctx context.Context) {
+		streamer, format, err := mp3.Decode(io.NopCloser(bytes.NewReader(audioData)))
+		if err != nil {
+			log.Error("Failed to decode MP3 stream", "label", label, "error", err)
+			return
+		}
+		defer streamer.Close()
+		if err := initSpeaker(format.SampleRate); err != nil {
+			log.Error("Failed to initialize speaker", "label", label, "error", err)
+			return
+		}
+		log.Info("Speaking text", "label", label)
+		playStreamer(ctx, resampleToSpeaker(streamer, format.SampleRate))
+		log.Debug("Finished speaking", "label", label)
+	})
 }
 
 // Helper functions for building tool results
@@ -281,6 +254,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose debug logging")
 	rootCmd.PersistentFlags().BoolVar(&suppressSpeakingOutput, "suppress-speaking-output", false, "Suppress 'Speaking:' text output")
 	rootCmd.PersistentFlags().BoolVar(&sequentialTTS, "sequential-tts", true, "Enforce sequential TTS (prevent concurrent speech)")
+	rootCmd.PersistentFlags().BoolVar(&elicitEnabled, "elicit", false, "Enable interactive elicitation prompts (env: MCP_TTS_ELICIT)")
 	rootCmd.PersistentFlags().StringVar(&outputDir, "output-dir", "", "Save audio files to directory (env: MCP_TTS_OUTPUT_DIR)")
 	rootCmd.PersistentFlags().BoolVar(&noPlay, "no-play", false, "Skip playback, only save (requires --output-dir)")
 
@@ -292,6 +266,11 @@ func init() {
 	// Check environment variable for concurrent TTS
 	if os.Getenv("MCP_TTS_ALLOW_CONCURRENT") == "true" {
 		sequentialTTS = false
+	}
+
+	// Check environment variable for interactive elicitation
+	if os.Getenv("MCP_TTS_ELICIT") == "true" {
+		elicitEnabled = true
 	}
 
 	// Check environment variable for output directory
@@ -327,6 +306,13 @@ Designed to be used with the MCP (Model Context Protocol).`,
 		if verbose {
 			log.SetLevel(log.DebugLevel)
 		}
+
+		// serverCtx outlives individual tool requests. Audio playback is
+		// detached onto it so a cancelled request cannot truncate speech;
+		// it is cancelled only when the server itself shuts down.
+		var serverCancel context.CancelFunc
+		serverCtx, serverCancel = context.WithCancel(context.Background())
+		defer serverCancel()
 
 		// Validate --no-play requires --output-dir
 		if noPlay && outputDir == "" {
@@ -444,13 +430,8 @@ Designed to be used with the MCP (Model Context Protocol).`,
 					applySaySettings(&input, content)
 				}
 
-				release, err := acquireTTSLock(ctx)
-				if err != nil {
-					log.Info("Request cancelled while waiting for TTS lock")
-					return textResult("Request cancelled while waiting for TTS"), nil, nil
-				}
-				defer release()
-
+				// Build base args (rate + optional voice). Validation happens
+				// synchronously so the caller sees argument errors immediately.
 				args := []string{"--rate"}
 				if input.Rate != nil {
 					args = append(args, fmt.Sprintf("%d", *input.Rate))
@@ -485,58 +466,55 @@ Designed to be used with the MCP (Model Context Protocol).`,
 					}
 				}
 
-				// Handle audio saving for macOS say
-				// Note: say -o writes to file instead of playing (implicit no-play)
-				var savedPath string
-				willPlay := true
-				if shouldSave() {
+				// Save-only mode: write the file synchronously so we can report
+				// the exact path. say -o writes faster than real time and does
+				// not play, so there is nothing to truncate.
+				if !shouldPlay() {
 					filename := generateFilename(text, "aiff")
-					savedPath = filepath.Join(outputDir, filename)
-					args = append(args, "-o", savedPath)
-					willPlay = false // say -o does not play, only writes
-					log.Debug("Saving audio to file", "path", savedPath)
-				}
-
-				args = append(args, text)
-
-				log.Debug("Executing say command", "args", args)
-				sayCmd := exec.CommandContext(ctx, "/usr/bin/say", args...)
-				if err := sayCmd.Start(); err != nil {
-					log.Error("Failed to start say command", "error", err)
-					return errorResult(fmt.Sprintf("Error: Failed to start say command: %v", err)), nil, nil
-				}
-
-				done := make(chan error, 1)
-				go func() {
-					done <- sayCmd.Wait()
-				}()
-
-				select {
-				case err := <-done:
-					if err != nil {
-						if ctx.Err() == context.Canceled {
-							log.Info("Say command cancelled by user")
+					savedPath := filepath.Join(outputDir, filename)
+					saveArgs := append(append([]string{}, args...), "-o", savedPath, text)
+					log.Debug("Saving say audio to file", "path", savedPath, "args", saveArgs)
+					if err := exec.CommandContext(ctx, "/usr/bin/say", saveArgs...).Run(); err != nil {
+						if ctx.Err() != nil {
 							return textResult("Say command cancelled"), nil, nil
 						}
 						log.Error("Say command failed", "error", err)
 						return errorResult(fmt.Sprintf("Error: Say command failed: %v", err)), nil, nil
 					}
-					log.Info("Speaking text completed", "text", text)
-					// If we saved but didn't play, and user wants playback too, play the saved file
-					if savedPath != "" && shouldPlay() {
+					return textResult(formatSaveResult(text, savedPath, false)), nil, nil
+				}
+
+				// Play mode: detach playback so a cancelled/timed-out request
+				// cannot truncate speech. The saved path (if any) is
+				// deterministic, so we can report it before the file exists.
+				var savedPath string
+				playArgs := append([]string{}, args...)
+				if shouldSave() {
+					filename := generateFilename(text, "aiff")
+					savedPath = filepath.Join(outputDir, filename)
+					playArgs = append(playArgs, "-o", savedPath)
+				}
+				playArgs = append(playArgs, text)
+
+				playInBackground("say_tts", func(ctx context.Context) {
+					log.Debug("Executing say command", "args", playArgs)
+					if err := exec.CommandContext(ctx, "/usr/bin/say", playArgs...).Run(); err != nil {
+						if ctx.Err() == nil {
+							log.Error("Say command failed", "error", err)
+						}
+						return
+					}
+					// say -o wrote the file without playing; play it now.
+					if savedPath != "" {
 						log.Debug("Playing saved AIFF file", "path", savedPath)
-						playCmd := exec.CommandContext(ctx, "afplay", savedPath)
-						if playErr := playCmd.Run(); playErr != nil {
-							log.Warn("Failed to play saved audio", "error", playErr)
-						} else {
-							willPlay = true
+						if err := exec.CommandContext(ctx, "afplay", savedPath).Run(); err != nil && ctx.Err() == nil {
+							log.Warn("Failed to play saved audio", "error", err)
 						}
 					}
-					return textResult(formatSaveResult(text, savedPath, willPlay)), nil, nil
-				case <-ctx.Done():
-					log.Info("Say command cancelled by user")
-					return textResult("Say command cancelled"), nil, nil
-				}
+					log.Info("Speaking text completed", "text", text)
+				})
+
+				return textResult(formatSaveResult(text, savedPath, true)), nil, nil
 			})
 		}
 
@@ -559,13 +537,6 @@ Designed to be used with the MCP (Model Context Protocol).`,
 				return textResult("Request cancelled"), nil, nil
 			default:
 			}
-
-			release, err := acquireTTSLock(ctx)
-			if err != nil {
-				log.Info("Request cancelled while waiting for TTS lock")
-				return textResult("Request cancelled while waiting for TTS"), nil, nil
-			}
-			defer release()
 
 			log.Debug("ElevenLabs tool called", "params", input)
 			text := input.Text
@@ -591,258 +562,81 @@ Designed to be used with the MCP (Model Context Protocol).`,
 				return errorResult("Error: ELEVENLABS_API_KEY is not set"), nil, nil
 			}
 
-			shouldPlayNow := shouldPlay()
-			shouldSaveNow := shouldSave()
-			noPlaySave := !shouldPlayNow && shouldSaveNow
-
-			// Buffer to capture MP3 data if saving is enabled
-			var mp3Buffer *bytes.Buffer
-			if shouldSaveNow {
-				mp3Buffer = &bytes.Buffer{}
+			// Fetch the audio synchronously so HTTP/API errors surface to the
+			// caller, then hand playback off to the background.
+			url := fmt.Sprintf("https://api.elevenlabs.io/v1/text-to-speech/%s/stream", voiceID)
+			params := ElevenLabsParams{
+				Text:    text,
+				ModelID: modelID,
+				VoiceSettings: SynthesisOptions{
+					Stability:       0.5, // Must be 0.0 (Creative), 0.5 (Natural), or 1.0 (Robust)
+					SimilarityBoost: 0.75,
+					Style:           0.5,
+					UseSpeakerBoost: false,
+				},
 			}
 
-			var pipeReader *io.PipeReader
-			var pipeWriter *io.PipeWriter
-			if shouldPlayNow {
-				pipeReader, pipeWriter = io.Pipe()
+			b, err := json.Marshal(params)
+			if err != nil {
+				log.Error("Failed to marshal request body", "error", err)
+				return errorResult(fmt.Sprintf("Error: failed to marshal request body: %v", err)), nil, nil
 			}
 
-			// Channel to signal when HTTP response status has been validated
-			statusValidated := make(chan error, 1)
-			// Channel to signal when audio playback is complete
-			audioComplete := make(chan error, 1)
+			log.Debug("Making ElevenLabs API request", "url", url, "voice", voiceID, "model", modelID, "text", text)
+			httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewBuffer(b))
+			if err != nil {
+				log.Error("Failed to create request", "error", err)
+				return errorResult(fmt.Sprintf("Error: failed to create request: %v", err)), nil, nil
+			}
+			httpReq.Header.Set("xi-api-key", apiKey)
+			httpReq.Header.Set("Content-Type", "application/json")
+			httpReq.Header.Set("accept", "audio/mpeg")
 
-			g, ctx := errgroup.WithContext(ctx)
-			reqCtx, cancelReq := context.WithCancel(ctx)
-			defer cancelReq()
+			safeLog("Sending HTTP request", httpReq)
+			res, err := http.DefaultClient.Do(httpReq)
+			if err != nil {
+				if ctx.Err() != nil {
+					return textResult("Request cancelled"), nil, nil
+				}
+				log.Error("Failed to send request", "error", err)
+				return errorResult(fmt.Sprintf("Error: failed to send request: %v", err)), nil, nil
+			}
+			defer res.Body.Close()
 
-			var stopOnce sync.Once
-			stopStreaming := func(err error) {
-				stopOnce.Do(func() {
-					if err == nil {
-						err = context.Canceled
-					}
-					cancelReq()
-					if pipeReader != nil {
-						if closeErr := pipeReader.CloseWithError(err); closeErr != nil {
-							log.Debug("Failed to close ElevenLabs pipe reader", "error", closeErr)
-						}
-					}
-				})
+			if res.StatusCode != http.StatusOK {
+				body, _ := io.ReadAll(res.Body)
+				log.Error("ElevenLabs request failed", "status", res.Status, "body", string(body))
+				if len(body) > 0 {
+					return errorResult(fmt.Sprintf("Error: ElevenLabs API error (status %d): %s", res.StatusCode, string(body))), nil, nil
+				}
+				return errorResult(fmt.Sprintf("Error: ElevenLabs API error: status %d %s", res.StatusCode, res.Status)), nil, nil
 			}
 
-			g.Go(func() error {
-				if pipeWriter != nil {
-					defer pipeWriter.Close()
+			audioData, err := io.ReadAll(res.Body)
+			if err != nil {
+				if ctx.Err() != nil {
+					return textResult("Request cancelled"), nil, nil
 				}
-
-				url := fmt.Sprintf("https://api.elevenlabs.io/v1/text-to-speech/%s/stream", voiceID)
-
-				params := ElevenLabsParams{
-					Text:    text,
-					ModelID: modelID,
-					VoiceSettings: SynthesisOptions{
-						Stability:       0.5, // Must be 0.0 (Creative), 0.5 (Natural), or 1.0 (Robust)
-						SimilarityBoost: 0.75,
-						Style:           0.5,
-						UseSpeakerBoost: false,
-					},
-				}
-
-				b, err := json.Marshal(params)
-				if err != nil {
-					log.Error("Failed to marshal request body", "error", err)
-					statusValidated <- fmt.Errorf("failed to marshal request body: %v", err)
-					return fmt.Errorf("failed to marshal request body: %v", err)
-				}
-
-				log.Debug("Making ElevenLabs API request",
-					"url", url,
-					"voice", voiceID,
-					"model", modelID,
-					"text", text,
-					"params", params,
-				)
-
-				req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, url, bytes.NewBuffer(b))
-				if err != nil {
-					log.Error("Failed to create request", "error", err)
-					statusValidated <- fmt.Errorf("failed to create request: %v", err)
-					return fmt.Errorf("failed to create request: %v", err)
-				}
-
-				req.Header.Set("xi-api-key", apiKey)
-				req.Header.Set("Content-Type", "application/json")
-				req.Header.Set("accept", "audio/mpeg")
-
-				safeLog("Sending HTTP request", req)
-				res, err := http.DefaultClient.Do(req)
-				if err != nil {
-					log.Error("Failed to send request", "error", err)
-					statusValidated <- fmt.Errorf("failed to send request: %v", err)
-					return fmt.Errorf("failed to send request: %v", err)
-				}
-				defer res.Body.Close()
-
-				if res.StatusCode != http.StatusOK {
-					log.Error("Request failed", "status", res.Status, "statusCode", res.StatusCode)
-					// Read the error response body for more details
-					body, readErr := io.ReadAll(res.Body)
-					errMsg := fmt.Errorf("ElevenLabs API error: status %d %s", res.StatusCode, res.Status)
-					if readErr == nil && len(body) > 0 {
-						log.Error("Error response body", "body", string(body))
-						errMsg = fmt.Errorf("ElevenLabs API error (status %d): %s", res.StatusCode, string(body))
-					}
-					statusValidated <- errMsg
-					return errMsg
-				}
-
-				// HTTP status is OK, signal success and proceed with streaming
-				statusValidated <- nil
-
-				if noPlaySave {
-					log.Debug("Copying response body to buffer")
-					var reader io.Reader = res.Body
-					if mp3Buffer != nil {
-						reader = io.TeeReader(res.Body, mp3Buffer)
-					}
-					bytesWritten, err := io.Copy(io.Discard, reader)
-					log.Debug("Response body copied", "bytes", bytesWritten)
-					return err
-				}
-
-				log.Debug("Copying response body to pipe")
-				var bytesWritten int64
-				if pipeWriter == nil {
-					return fmt.Errorf("missing pipe writer for playback")
-				}
-				if mp3Buffer != nil {
-					// Use TeeReader to capture MP3 data while streaming
-					tee := io.TeeReader(res.Body, mp3Buffer)
-					bytesWritten, err = io.Copy(pipeWriter, tee)
-				} else {
-					bytesWritten, err = io.Copy(pipeWriter, res.Body)
-				}
-				log.Debug("Response body copied", "bytes", bytesWritten)
-				return err
-			})
-
-			select {
-			case err := <-statusValidated:
-				if err != nil {
-					log.Error("HTTP request failed", "error", err)
-					return errorResult(fmt.Sprintf("Error: %v", err)), nil, nil
-				}
-				log.Debug("HTTP status validated successfully, proceeding to decode")
-			case <-ctx.Done():
-				log.Error("Context cancelled while waiting for HTTP status validation")
-				return errorResult("Error: Request cancelled"), nil, nil
+				log.Error("Failed to read ElevenLabs response", "error", err)
+				return errorResult(fmt.Sprintf("Error: failed to read response: %v", err)), nil, nil
 			}
+			log.Debug("ElevenLabs audio received", "bytes", len(audioData))
 
-			// Handle no-play mode: buffer stream and save without playback
-			if noPlaySave {
-				log.Debug("No-play mode: buffering stream for save")
-				// Wait for HTTP goroutine to complete (it will copy to mp3Buffer)
-				if err := g.Wait(); err != nil && err != context.Canceled {
-					log.Error("Error occurred during streaming", "error", err)
-					return errorResult(fmt.Sprintf("Error: %v", err)), nil, nil
-				}
-				// Save the MP3 file
-				savedPath, saveErr := saveMP3(mp3Buffer.Bytes(), text)
-				if saveErr != nil {
-					log.Error("Failed to save MP3 file", "error", saveErr)
-					return errorResult(fmt.Sprintf("Error saving audio: %v", saveErr)), nil, nil
+			// Save MP3 if enabled (synchronously, so the path is accurate).
+			var savedPath string
+			if shouldSave() {
+				if savedPath, err = saveMP3(audioData, text); err != nil {
+					log.Error("Failed to save MP3 file", "error", err)
+					return errorResult(fmt.Sprintf("Error saving audio: %v", err)), nil, nil
 				}
 				log.Info("Audio saved", "path", savedPath)
+			}
+
+			if !shouldPlay() {
 				return textResult(formatSaveResult(text, savedPath, false)), nil, nil
 			}
 
-			// Start audio playback in a separate goroutine with cancellation support
-			g.Go(func() error {
-				log.Debug("Decoding MP3 stream")
-				streamer, format, err := mp3.Decode(pipeReader)
-				if err != nil {
-					log.Error("Failed to decode response", "error", err)
-					stopStreaming(err)
-					audioComplete <- fmt.Errorf("failed to decode response: %v", err)
-					return fmt.Errorf("failed to decode response: %v", err)
-				}
-				defer streamer.Close()
-
-				log.Debug("Initializing speaker", "sampleRate", format.SampleRate)
-				if err := initSpeaker(format.SampleRate); err != nil {
-					log.Error("Failed to initialize speaker", "error", err)
-					stopStreaming(err)
-					audioComplete <- fmt.Errorf("failed to initialize speaker: %v", err)
-					return fmt.Errorf("failed to initialize speaker: %v", err)
-				}
-				playback := resampleToSpeaker(streamer, format.SampleRate)
-				done := make(chan bool, 1)
-
-				// Play audio with callback
-				speaker.Play(beep.Seq(playback, beep.Callback(func() {
-					done <- true
-				})))
-
-				log.Info("Speaking text via ElevenLabs", "text", text)
-
-				// Wait for either completion or cancellation
-				select {
-				case <-done:
-					log.Debug("Audio playback completed normally")
-					stopStreaming(nil)
-					audioComplete <- nil
-					return nil
-				case <-ctx.Done():
-					log.Debug("Context cancelled, stopping audio playback")
-					stopStreaming(ctx.Err())
-					// Clear all audio from speaker to stop playback immediately
-					speaker.Clear()
-					audioComplete <- ctx.Err()
-					return ctx.Err()
-				}
-			})
-
-			select {
-			case err := <-audioComplete:
-				if err != nil && err != context.Canceled {
-					log.Error("Audio playback failed", "error", err)
-					stopStreaming(err)
-					return errorResult(fmt.Sprintf("Error: %v", err)), nil, nil
-				}
-				if err == context.Canceled {
-					log.Info("Audio playback cancelled by user")
-					stopStreaming(err)
-					return textResult("Audio playback cancelled"), nil, nil
-				}
-				stopStreaming(nil)
-			case <-ctx.Done():
-				log.Info("Request cancelled, stopping all operations")
-				stopStreaming(ctx.Err())
-				speaker.Clear()
-				return textResult("Request cancelled"), nil, nil
-			}
-
-			log.Debug("Finished speaking")
-
-			if err := g.Wait(); err != nil && err != context.Canceled {
-				log.Error("Error occurred during streaming", "error", err)
-				return errorResult(fmt.Sprintf("Error: %v", err)), nil, nil
-			}
-
-			// Save the MP3 file if enabled
-			var savedPath string
-			if shouldSave() && mp3Buffer != nil {
-				var saveErr error
-				savedPath, saveErr = saveMP3(mp3Buffer.Bytes(), text)
-				if saveErr != nil {
-					log.Error("Failed to save MP3 file", "error", saveErr)
-					// Don't fail the request, just log the error
-				} else {
-					log.Info("Audio saved", "path", savedPath)
-				}
-			}
-
+			playMP3InBackground("elevenlabs_tts", audioData)
 			return textResult(formatSaveResult(text, savedPath, true)), nil, nil
 		})
 
@@ -888,13 +682,6 @@ Designed to be used with the MCP (Model Context Protocol).`,
 				}
 				applyGoogleSettings(&input, content)
 			}
-
-			release, err := acquireTTSLock(ctx)
-			if err != nil {
-				log.Info("Request cancelled while waiting for TTS lock")
-				return textResult("Request cancelled while waiting for TTS"), nil, nil
-			}
-			defer release()
 
 			voice := DefaultGoogleVoice
 			if input.Voice != nil && *input.Voice != "" {
@@ -962,22 +749,20 @@ Designed to be used with the MCP (Model Context Protocol).`,
 			}
 
 			audioData := part.InlineData.Data
-			totalSamples := len(audioData) / 2 // 16-bit samples = 2 bytes each
-			log.Info("Playing TTS audio via beep speaker", "bytes", len(audioData), "samples", totalSamples)
+			log.Debug("Google TTS audio received", "bytes", len(audioData))
 
 			const googleTTSSampleRate = 24000
 
-			// Save WAV file if enabled (do this before playback so file is ready even if cancelled)
+			// Save WAV file if enabled (synchronously, so the path is accurate).
 			var savedPath string
 			if shouldSave() {
 				var saveErr error
 				savedPath, saveErr = saveWAV(audioData, googleTTSSampleRate, text)
 				if saveErr != nil {
 					log.Error("Failed to save WAV file", "error", saveErr)
-					// Don't fail the request, just log the error
-				} else {
-					log.Info("Audio saved", "path", savedPath)
+					return errorResult(fmt.Sprintf("Error saving audio: %v", saveErr)), nil, nil
 				}
+				log.Info("Audio saved", "path", savedPath)
 			}
 
 			// Handle no-play mode: just save and return
@@ -985,39 +770,22 @@ Designed to be used with the MCP (Model Context Protocol).`,
 				return textResult(formatSaveResult(text, savedPath, false)), nil, nil
 			}
 
-			pcmStream := &PCMStream{
-				data:       audioData,
-				sampleRate: beep.SampleRate(googleTTSSampleRate),
-				position:   0,
-			}
-
-			if err := initSpeaker(pcmStream.sampleRate); err != nil {
-				log.Error("Failed to initialize speaker", "error", err)
-				return errorResult(fmt.Sprintf("Error: Failed to initialize speaker: %v", err)), nil, nil
-			}
-			playback := resampleToSpeaker(pcmStream, pcmStream.sampleRate)
-
-			progress := newProgressReporter(ctx, req, totalSamples, googleTTSSampleRate)
-			progress.start(func() int { return pcmStream.position })
-			defer progress.stop()
-
-			done := make(chan bool)
-			speaker.Play(beep.Seq(playback, beep.Callback(func() {
-				done <- true
-			})))
-
 			log.Info("Speaking via Google TTS", "text", text, "voice", voice, "model", model)
+			playInBackground("google_tts", func(ctx context.Context) {
+				pcmStream := &PCMStream{
+					data:       audioData,
+					sampleRate: beep.SampleRate(googleTTSSampleRate),
+					position:   0,
+				}
+				if err := initSpeaker(pcmStream.sampleRate); err != nil {
+					log.Error("Failed to initialize speaker", "label", "google_tts", "error", err)
+					return
+				}
+				playStreamer(ctx, resampleToSpeaker(pcmStream, pcmStream.sampleRate))
+				log.Debug("Finished speaking via Google TTS")
+			})
 
-			select {
-			case <-done:
-				log.Debug("Google TTS audio playback completed normally")
-				return textResult(formatSaveResult(text, savedPath, true)), nil, nil
-			case <-ctx.Done():
-				log.Debug("Context cancelled, stopping Google TTS audio playback")
-				speaker.Clear()
-				log.Info("Google TTS audio playback cancelled by user")
-				return textResult("Google TTS audio playback cancelled"), nil, nil
-			}
+			return textResult(formatSaveResult(text, savedPath, true)), nil, nil
 		})
 
 		// Add OpenAI TTS tool
@@ -1062,13 +830,6 @@ Designed to be used with the MCP (Model Context Protocol).`,
 				}
 				applyOpenAISettings(&input, content)
 			}
-
-			release, err := acquireTTSLock(ctx)
-			if err != nil {
-				log.Info("Request cancelled while waiting for TTS lock")
-				return textResult("Request cancelled while waiting for TTS"), nil, nil
-			}
-			defer release()
 
 			voice := DefaultOpenAIVoice
 			if input.Voice != nil && *input.Voice != "" {
@@ -1141,17 +902,16 @@ Designed to be used with the MCP (Model Context Protocol).`,
 			}
 			log.Debug("OpenAI TTS audio data received", "bytes", len(audioData))
 
-			// Save MP3 file if enabled (do this before playback)
+			// Save MP3 file if enabled (synchronously, so the path is accurate).
 			var savedPath string
 			if shouldSave() {
 				var saveErr error
 				savedPath, saveErr = saveMP3(audioData, text)
 				if saveErr != nil {
 					log.Error("Failed to save MP3 file", "error", saveErr)
-					// Don't fail the request, just log the error
-				} else {
-					log.Info("Audio saved", "path", savedPath)
+					return errorResult(fmt.Sprintf("Error saving audio: %v", saveErr)), nil, nil
 				}
+				log.Info("Audio saved", "path", savedPath)
 			}
 
 			// Handle no-play mode: just save and return
@@ -1159,47 +919,14 @@ Designed to be used with the MCP (Model Context Protocol).`,
 				return textResult(formatSaveResult(text, savedPath, false)), nil, nil
 			}
 
-			log.Debug("Decoding MP3 stream from OpenAI")
-			streamer, format, err := mp3.Decode(io.NopCloser(bytes.NewReader(audioData)))
-			if err != nil {
-				log.Error("Failed to decode OpenAI TTS response", "error", err)
-				return errorResult(fmt.Sprintf("Error: Failed to decode response: %v", err)), nil, nil
-			}
-			defer streamer.Close()
-
-			totalSamples := streamer.Len()
-			log.Debug("Initializing speaker for OpenAI TTS", "sampleRate", format.SampleRate, "totalSamples", totalSamples)
-			if err := initSpeaker(format.SampleRate); err != nil {
-				log.Error("Failed to initialize speaker", "error", err)
-				return errorResult(fmt.Sprintf("Error: Failed to initialize speaker: %v", err)), nil, nil
-			}
-			playback := resampleToSpeaker(streamer, format.SampleRate)
-
-			progress := newProgressReporter(ctx, req, totalSamples, int(format.SampleRate))
-			progress.start(func() int { return streamer.Position() })
-			defer progress.stop()
-
-			done := make(chan bool)
-			speaker.Play(beep.Seq(playback, beep.Callback(func() {
-				done <- true
-			})))
-
 			logFields = []any{"text", text, "voice", voice, "model", model, "speed", speed}
 			if instructions != "" {
 				logFields = append(logFields, "instructions", instructions)
 			}
 			log.Info("Speaking text via OpenAI TTS", logFields...)
 
-			select {
-			case <-done:
-				log.Debug("OpenAI TTS audio playback completed normally")
-				return textResult(formatSaveResult(text, savedPath, true)), nil, nil
-			case <-ctx.Done():
-				log.Debug("Context cancelled, stopping OpenAI TTS audio playback")
-				speaker.Clear()
-				log.Info("OpenAI TTS audio playback cancelled by user")
-				return textResult("OpenAI TTS audio playback cancelled"), nil, nil
-			}
+			playMP3InBackground("openai_tts", audioData)
+			return textResult(formatSaveResult(text, savedPath, true)), nil, nil
 		})
 
 		// Add interactive TTS tool that uses elicitation to choose provider
@@ -1280,12 +1007,11 @@ Designed to be used with the MCP (Model Context Protocol).`,
 		})
 
 		log.Info("Starting MCP server", "name", "mcp-tts", "version", Version)
-		// Start the server using stdin/stdout
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		if err := ctrlc.Default.Run(ctx, func() error {
-			if err := s.Run(ctx, &mcp.StdioTransport{}); err != nil {
+		// Start the server using stdin/stdout. serverCtx (created above) is
+		// cancelled on shutdown, which also stops any in-flight background
+		// playback.
+		if err := ctrlc.Default.Run(serverCtx, func() error {
+			if err := s.Run(serverCtx, &mcp.StdioTransport{}); err != nil {
 				return fmt.Errorf("failed to serve MCP: %v", err)
 			}
 			return nil

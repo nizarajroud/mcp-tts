@@ -24,3 +24,12 @@ snapshot:
 test:
 	@echo "🧪 Running Tests..."
 	go test -v ./...
+
+.PHONY: fmt
+fmt:
+	@echo " > Formatting code"
+	@gofmt -w -r 'interface{} -> any' .
+	@goimports -w .
+	@gofmt -w -s .
+	@go mod tidy
+	@go fix ./...

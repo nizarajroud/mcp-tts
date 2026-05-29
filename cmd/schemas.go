@@ -19,21 +19,22 @@ func buildSayTTSSchema() json.RawMessage {
 				"description": "The text to speak aloud",
 			},
 			"rate": map[string]any{
+				// No JSON-schema "default" here on purpose: the SDK injects schema
+				// defaults into the decoded struct, which would make Rate non-nil
+				// and defeat the "all optional fields unset" elicitation check.
+				// The handler applies DefaultSayRate when Rate is nil.
 				"type":        "integer",
 				"description": "Speech rate in words per minute. RECOMMENDED: 200-250 for natural speech. Only increase to 275-300 if user explicitly requests faster speech. Do NOT set above 300 unless specifically asked. (default: 200)",
 				"minimum":     50,
 				"maximum":     500,
-				"default":     200,
 			},
 			"voice": map[string]any{
+				// No enum: macOS hosts have any of ~180 voices (legacy like
+				// "Samantha"/"Alex" plus downloadable Premium/Enhanced ones). An
+				// enum would reject installed voices and offer un-downloaded ones.
+				// The handler validates the name and checks IsVoiceInstalled.
 				"type":        "string",
-				"description": "Voice to use for speech synthesis. IMPORTANT: Prefer leaving this unset to use the system's default voice, which sounds more natural. Only set a specific voice if the user explicitly requests one.",
-				"enum": []string{
-					"Isha (Premium)",
-					"Serena (Premium)",
-					"Zoe (Premium)",
-					"Evan (Enhanced)",
-				}, // NOTE: these need to be downloaded to be available
+				"description": "Voice to use for speech synthesis (e.g. 'Samantha', 'Alex', 'Daniel'). Leave unset to use the system default voice. Note: some Premium/Enhanced voices must be downloaded in System Settings before they produce audio.",
 			},
 		},
 		"required": []string{"text"},

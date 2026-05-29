@@ -558,6 +558,8 @@ func openAISettingsValidator(t *testing.T, request MCPRequest) {
 func interactiveTTSTextResult(t *testing.T, replies []elicitationReply) string {
 	t.Helper()
 
+	// Elicitation is opt-in; the spawned server inherits this env var.
+	t.Setenv("MCP_TTS_ELICIT", "true")
 	t.Setenv("GOOGLE_AI_API_KEY", "test-google-api-key")
 	t.Setenv("OPENAI_API_KEY", "test-openai-api-key")
 

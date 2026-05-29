@@ -32,9 +32,12 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// canElicit returns true if the request has a session capable of elicitation.
+// canElicit returns true if elicitation is enabled and the request has a
+// session capable of elicitation. Elicitation is opt-in (--elicit /
+// MCP_TTS_ELICIT) because it interrupts the normal agent flow of calling
+// tools with explicit arguments.
 func canElicit(req *mcp.CallToolRequest) bool {
-	return req != nil && req.Session != nil
+	return elicitEnabled && req != nil && req.Session != nil
 }
 
 type elicitationStatus uint8
