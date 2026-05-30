@@ -7,69 +7,84 @@ import (
 	"sync"
 )
 
-// VoiceAvailability holds cached voice availability data
-type VoiceAvailability struct {
+// voiceAvailability holds the cached set of installed voice names.
+type voiceAvailability struct {
+	mu     sync.RWMutex
 	voices map[string]bool
-	once   sync.Once
-	err    error
 }
 
-var voiceCache VoiceAvailability
+var voiceCache voiceAvailability
 
-// getInstalledVoices runs `say -v?` and parses the output to get all installed voices.
-// Results are cached for the lifetime of the process.
+// voiceLoader queries the installed voices. It is a package var so tests can
+// supply a deterministic set without invoking `say -v?`.
+var voiceLoader = loadInstalledVoices
+
+// loadInstalledVoices runs `say -v?` and parses its output into the set of
+// installed voice names. Each line begins with the voice name followed by a
+// locale column, e.g.:
+//
+//	Albert                en_US    # Hello! My name is Albert.
+//	Eddy (German (Germany)) de_DE  # Hallo! Ich heiße Eddy.
+func loadInstalledVoices() (map[string]bool, error) {
+	voices := make(map[string]bool)
+	if runtime.GOOS != "darwin" {
+		return voices, nil
+	}
+
+	out, err := exec.Command("/usr/bin/say", "-v?").Output()
+	if err != nil {
+		return nil, err
+	}
+
+	for line := range strings.SplitSeq(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		// The voice name is every field before the locale column.
+		parts := strings.Fields(line)
+		if len(parts) < 2 {
+			continue
+		}
+		voiceNameParts := []string{}
+		for i, part := range parts {
+			if isLocale(part) {
+				voiceNameParts = parts[:i]
+				break
+			}
+		}
+		if len(voiceNameParts) == 0 {
+			voiceNameParts = parts[:1]
+		}
+		voices[strings.Join(voiceNameParts, " ")] = true
+	}
+
+	return voices, nil
+}
+
+// getInstalledVoices returns the cached installed-voice set, loading it on first
+// use. Use refreshInstalledVoices to force a re-query.
 func getInstalledVoices() (map[string]bool, error) {
-	voiceCache.once.Do(func() {
-		voiceCache.voices = make(map[string]bool)
+	voiceCache.mu.RLock()
+	cached := voiceCache.voices
+	voiceCache.mu.RUnlock()
+	if cached != nil {
+		return cached, nil
+	}
+	return refreshInstalledVoices()
+}
 
-		if runtime.GOOS != "darwin" {
-			// Not on macOS, no voices available
-			return
-		}
-
-		out, err := exec.Command("/usr/bin/say", "-v?").Output()
-		if err != nil {
-			voiceCache.err = err
-			return
-		}
-
-		// Parse output - each line starts with voice name, followed by locale
-		// Example: "Albert              en_US    # Hello! My name is Albert."
-		// Example: "Eddy (German (Germany)) de_DE    # Hallo! Ich heiße Eddy."
-		for line := range strings.SplitSeq(string(out), "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" {
-				continue
-			}
-
-			// Find the locale pattern (xx_XX) to determine where the voice name ends
-			// The voice name is everything before the locale
-			parts := strings.Fields(line)
-			if len(parts) < 2 {
-				continue
-			}
-
-			// Find the locale column - it's the first field that matches xx_XX pattern
-			voiceNameParts := []string{}
-			for i, part := range parts {
-				if isLocale(part) {
-					// Everything before this is the voice name
-					voiceNameParts = parts[:i]
-					break
-				}
-			}
-
-			if len(voiceNameParts) == 0 {
-				// Fallback: just use the first part as voice name
-				voiceNameParts = parts[:1]
-			}
-
-			voiceName := strings.Join(voiceNameParts, " ")
-			voiceCache.voices[voiceName] = true
-		}
-	})
-
-	return voiceCache.voices, voiceCache.err
+// refreshInstalledVoices re-queries the installed voices and replaces the cache.
+func refreshInstalledVoices() (map[string]bool, error) {
+	voices, err := voiceLoader()
+	if err != nil {
+		return nil, err
+	}
+	voiceCache.mu.Lock()
+	voiceCache.voices = voices
+	voiceCache.mu.Unlock()
+	return voices, nil
 }
 
 // isLocale checks if a string looks like a locale code (e.g., en_US, de_DE)
@@ -85,14 +100,23 @@ func isLocale(s string) bool {
 		s[4] >= 'A' && s[4] <= 'Z'
 }
 
-// IsVoiceInstalled checks if a specific voice is installed on the system.
-// Returns (isInstalled, error). If error is non-nil, voice availability couldn't be determined.
+// IsVoiceInstalled reports whether voiceName is installed. On a cache miss it
+// refreshes the cache once before reporting false, so a voice downloaded after
+// the process started (e.g. a Premium voice added in System Settings) is
+// recognized without restarting a long-lived server.
 func IsVoiceInstalled(voiceName string) (bool, error) {
 	voices, err := getInstalledVoices()
 	if err != nil {
 		return false, err
 	}
+	if voices[voiceName] {
+		return true, nil
+	}
 
+	voices, err = refreshInstalledVoices()
+	if err != nil {
+		return false, err
+	}
 	return voices[voiceName], nil
 }
 
@@ -102,7 +126,9 @@ func VoiceNotInstalledError(voiceName string) string {
 		"To download additional voices, go to: System Settings → Accessibility → Spoken Content → System Voice → Manage Voices"
 }
 
-// resetVoiceCache is used for testing to reset the cached voice data
+// resetVoiceCache clears the cached voice data (test helper).
 func resetVoiceCache() {
-	voiceCache = VoiceAvailability{}
+	voiceCache.mu.Lock()
+	voiceCache.voices = nil
+	voiceCache.mu.Unlock()
 }

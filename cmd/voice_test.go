@@ -101,6 +101,47 @@ func TestIsVoiceInstalled(t *testing.T) {
 	}
 }
 
+func TestIsVoiceInstalledRefreshesOnMiss(t *testing.T) {
+	// Simulate a long-lived server whose cache was built before the voice
+	// existed, then a Premium voice downloaded in System Settings afterwards.
+	installed := map[string]bool{"Alex": true}
+	prev := voiceLoader
+	// Return a fresh snapshot per call so the cache keeps an older copy and the
+	// test can tell a stale cache hit apart from a real refresh. Reusing
+	// seedInstalledVoices (one shared map) would leak the mutation below into the
+	// cache, making the test pass even without refresh-on-miss.
+	voiceLoader = func() (map[string]bool, error) {
+		snapshot := make(map[string]bool, len(installed))
+		for name := range installed {
+			snapshot[name] = true
+		}
+		return snapshot, nil
+	}
+	resetVoiceCache()
+	t.Cleanup(func() {
+		voiceLoader = prev
+		resetVoiceCache()
+	})
+
+	ok, err := IsVoiceInstalled("Serena (Premium)")
+	if err != nil {
+		t.Fatalf("IsVoiceInstalled() error = %v", err)
+	}
+	if ok {
+		t.Fatal("expected Serena (Premium) absent before it is installed")
+	}
+
+	installed["Serena (Premium)"] = true
+
+	ok, err = IsVoiceInstalled("Serena (Premium)")
+	if err != nil {
+		t.Fatalf("IsVoiceInstalled() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("expected Serena (Premium) recognized after a post-startup install (stale-cache regression)")
+	}
+}
+
 func TestVoiceNotInstalledError(t *testing.T) {
 	msg := VoiceNotInstalledError("Zoe (Premium)")
 
@@ -143,6 +184,24 @@ func TestVoiceCaching(t *testing.T) {
 	if len(voices1) != len(voices2) {
 		t.Error("Expected cached voices to have same length")
 	}
+}
+
+// seedInstalledVoices pins the installed-voice set to the given names for the
+// duration of the test, bypassing the real `say -v?` query so voice validation
+// is deterministic across platforms.
+func seedInstalledVoices(t *testing.T, names ...string) {
+	t.Helper()
+	voices := make(map[string]bool, len(names))
+	for _, n := range names {
+		voices[n] = true
+	}
+	prev := voiceLoader
+	voiceLoader = func() (map[string]bool, error) { return voices, nil }
+	resetVoiceCache()
+	t.Cleanup(func() {
+		voiceLoader = prev
+		resetVoiceCache()
+	})
 }
 
 func contains(s, substr string) bool {

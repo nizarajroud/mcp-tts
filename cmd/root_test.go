@@ -183,11 +183,7 @@ func TestSayCommandArgsLeavesVoiceUnset(t *testing.T) {
 }
 
 func TestSayJSONVoiceOptionality(t *testing.T) {
-	resetVoiceCache()
-	voiceCache.once.Do(func() {
-		voiceCache.voices = map[string]bool{"Alex": true}
-	})
-	t.Cleanup(resetVoiceCache)
+	seedInstalledVoices(t, "Alex")
 
 	tests := []struct {
 		name         string
@@ -286,11 +282,7 @@ func TestSayCommandArgsRejectsInvalidVoiceCharacters(t *testing.T) {
 }
 
 func TestSayCommandArgsRejectsNotInstalledVoice(t *testing.T) {
-	resetVoiceCache()
-	voiceCache.once.Do(func() {
-		voiceCache.voices = map[string]bool{"Alex": true}
-	})
-	t.Cleanup(resetVoiceCache)
+	seedInstalledVoices(t, "Alex")
 
 	args, result := sayCommandArgs(SayTTSParams{
 		Text:  "hello",
