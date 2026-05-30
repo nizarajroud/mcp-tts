@@ -217,6 +217,11 @@ func playStreamer(ctx context.Context, streamer beep.Streamer) {
 // error to the caller — then detaches the real-time playback so a cancelled or
 // timed-out tool call cannot truncate the audio.
 func playMP3(label string, audioData []byte) error {
+	if handled, err := routeCloudPlayback(label, "mp3", func() ([]byte, error) {
+		return audioData, nil
+	}); handled {
+		return err
+	}
 	streamer, format, err := mp3.Decode(io.NopCloser(bytes.NewReader(audioData)))
 	if err != nil {
 		return fmt.Errorf("failed to decode audio: %w", err)
@@ -241,6 +246,16 @@ func playMP3(label string, audioData []byte) error {
 // device to the caller) then detaches real-time playback of raw 16-bit
 // little-endian PCM samples.
 func playPCM(label string, audioData []byte, sampleRate int) error {
+	if handled, err := routeCloudPlayback(label, "wav", func() ([]byte, error) {
+		var buf bytes.Buffer
+		if err := writeWAVHeader(&buf, len(audioData), sampleRate, 1, 16); err != nil {
+			return nil, fmt.Errorf("building WAV for GUI playback: %w", err)
+		}
+		buf.Write(audioData)
+		return buf.Bytes(), nil
+	}); handled {
+		return err
+	}
 	stream := &PCMStream{data: audioData, sampleRate: beep.SampleRate(sampleRate)}
 	if err := initSpeaker(stream.sampleRate); err != nil {
 		return fmt.Errorf("failed to initialize speaker: %w", err)
@@ -443,6 +458,10 @@ Designed to be used with the MCP (Model Context Protocol).`,
 		serverCtx, serverCancel = context.WithCancel(context.Background())
 		defer serverCancel()
 
+		// Bury GUI audio jobs left behind by crashed mcp-tts processes before we
+		// start routing new ones. No-op outside a routable Background session.
+		cleanupStaleGUIJobs()
+
 		// Validate --no-play requires --output-dir
 		if noPlay && outputDir == "" {
 			return fmt.Errorf("--no-play requires --output-dir to be set")
@@ -575,12 +594,29 @@ Designed to be used with the MCP (Model Context Protocol).`,
 					}
 				}
 
+				// Detect the launchd audio session once. A Background session has
+				// no route to GUI audio, so route through gui/<uid> when possible
+				// and fail loudly (never silently) when no GUI session exists.
+				mode, managerName := sessionModeFn()
+				if mode == sessionHeadless {
+					return errorResult(headlessAudioError(managerName)), nil, nil
+				}
+
 				// Save-only mode: write the file synchronously so we can report
 				// the exact path. say -o writes faster than real time and does
 				// not play, so there is nothing to truncate.
 				if !shouldPlay() {
 					filename := generateFilename(text, "aiff")
 					savedPath := filepath.Join(outputDir, filename)
+					if mode == sessionRoutable {
+						if err := guiSayPlay(ctx, args, text, savedPath, false); err != nil {
+							if ctx.Err() != nil {
+								return textResult("Say command cancelled"), nil, nil
+							}
+							return errorResult(fmt.Sprintf("Error: Say command failed: %v", err)), nil, nil
+						}
+						return textResult(formatSaveResult(text, savedPath, false)), nil, nil
+					}
 					saveArgs := append(append([]string{}, args...), "-o", savedPath, text)
 					log.Debug("Saving say audio to file", "path", savedPath, "args", saveArgs)
 					if err := exec.CommandContext(ctx, "/usr/bin/say", saveArgs...).Run(); err != nil {
@@ -598,10 +634,21 @@ Designed to be used with the MCP (Model Context Protocol).`,
 				// process is then waited in the background so request
 				// cancellation cannot truncate speech.
 				var savedPath string
-				playArgs := append([]string{}, args...)
 				if shouldSave() {
 					filename := generateFilename(text, "aiff")
 					savedPath = filepath.Join(outputDir, filename)
+				}
+
+				if mode == sessionRoutable {
+					if err := startRoutableSayPlayback(args, text, savedPath); err != nil {
+						log.Error("Failed to start GUI-routed say playback", "error", err)
+						return errorResult(fmt.Sprintf("Error: %v", err)), nil, nil
+					}
+					return textResult(formatSaveResult(text, savedPath, true)), nil, nil
+				}
+
+				playArgs := append([]string{}, args...)
+				if savedPath != "" {
 					playArgs = append(playArgs, "-o", savedPath)
 				}
 				playArgs = append(playArgs, text)

@@ -464,6 +464,9 @@ func requireSpeakingOrSkip(t *testing.T, text string) {
 	if strings.HasPrefix(text, "Error:") {
 		t.Skipf("provider API unavailable (quota/rate-limit/config): %s", text)
 	}
+	if strings.HasPrefix(text, "macOS audio is unavailable:") {
+		t.Skipf("no GUI audio session reachable (headless/sandboxed): %s", text)
+	}
 	assert.Contains(t, text, "Speaking:", "Response should indicate speaking")
 }
 
