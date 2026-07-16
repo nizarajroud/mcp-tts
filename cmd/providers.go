@@ -32,6 +32,7 @@ const (
 	ProviderElevenLabs = "elevenlabs_tts"
 	ProviderGoogle     = "google_tts"
 	ProviderOpenAI     = "openai_tts"
+	ProviderPiper      = "piper_tts"
 )
 
 // Default values for provider-specific settings.
@@ -85,6 +86,9 @@ func availableProviders() []providerOption {
 	var providers []providerOption
 	if runtime.GOOS == "darwin" {
 		providers = append(providers, providerOption{ProviderSay, "macOS Say"})
+	}
+	if isPiperAvailable() {
+		providers = append(providers, providerOption{ProviderPiper, "Piper (offline)"})
 	}
 	if os.Getenv("ELEVENLABS_API_KEY") != "" {
 		providers = append(providers, providerOption{ProviderElevenLabs, "ElevenLabs"})

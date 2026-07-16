@@ -18,11 +18,12 @@
 
 Adds Text-to-Speech to things like Claude Desktop and Cursor IDE.  
 
-It registers four TTS tools: 
+It registers five TTS tools: 
  - `say_tts` 
  - `elevenlabs_tts`
  - `google_tts`
  - `openai_tts`
+ - `piper_tts`
 
 ### `say_tts`
 
@@ -62,6 +63,22 @@ Supports three quality models:
 Additional features:
 - Speed control from 0.25x to 4.0x (default: 1.0x)
 - Custom voice instructions (e.g., "Speak in a cheerful and positive tone") via parameter or `OPENAI_TTS_INSTRUCTIONS` environment variable
+
+### `piper_tts`
+
+Uses [Piper](https://github.com/rhasspy/piper), a fast local neural text-to-speech engine. Runs **fully offline** with ONNX voice models — no API key, no internet connection required after model download.
+
+Features:
+- 100+ downloadable voices across 30+ languages
+- Runs on CPU (no GPU needed), real-time on Raspberry Pi 5
+- Multi-speaker model support via speaker ID
+- Adjustable speaking rate (`length_scale`) and variation (`noise_scale`)
+
+**Requirements:**
+- `piper` binary in PATH (`pip install piper-tts` or download from [releases](https://github.com/rhasspy/piper/releases))
+- At least one ONNX voice model downloaded (set `PIPER_MODEL` env var or pass `model` parameter)
+
+**Models:** Browse and download from [Piper voices](https://huggingface.co/rhasspy/piper-voices). Each model is a `.onnx` file with a companion `.onnx.json` config.
 
 ## Configuration
 
@@ -125,6 +142,7 @@ Files are saved with unique names: `tts_{timestamp}_{hash}.{ext}`
 | ElevenLabs | MP3 |
 | Google TTS | WAV |
 | OpenAI TTS | MP3 |
+| Piper TTS | WAV |
 
 ## Getting Started
 
@@ -239,6 +257,7 @@ Or manually add to `~/.gemini/settings.json` (or `.gemini/settings.json` in proj
 - `GOOGLE_AI_API_KEY` or `GEMINI_API_KEY`: Your Google AI API key (required for `google_tts`)
 - `OPENAI_API_KEY`: Your OpenAI API key (required for `openai_tts`)
 - `OPENAI_TTS_INSTRUCTIONS`: Custom voice instructions for OpenAI TTS (optional, e.g., "Speak in a cheerful and positive tone")
+- `PIPER_MODEL`: Path to Piper ONNX model file (required for `piper_tts` when not passing `model` parameter)
 - `MCP_TTS_SUPPRESS_SPEAKING_OUTPUT`: Set to "true" to suppress "Speaking:" output (optional)
 - `MCP_TTS_ALLOW_CONCURRENT`: Set to "true" to allow concurrent TTS operations (optional, defaults to sequential)
 - `MCP_TTS_OUTPUT_DIR`: Directory to save audio files (optional)

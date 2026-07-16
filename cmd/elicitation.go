@@ -278,6 +278,8 @@ func settingsSchemaForProvider(providerID string) map[string]any {
 		return googleSettingsSchema()
 	case ProviderOpenAI:
 		return openAISettingsSchema()
+	case ProviderPiper:
+		return piperSettingsSchema()
 	default:
 		return nil
 	}
@@ -387,6 +389,10 @@ func providerRecommendationArgs(providerID, text string, content map[string]any)
 		input := OpenAITTSParams{Text: text}
 		applyOpenAISettings(&input, content)
 		return openAIRecommendationArgs(input)
+	case ProviderPiper:
+		input := PiperTTSParams{Text: text}
+		applyPiperSettings(&input, content)
+		return piperRecommendationArgs(input)
 	default:
 		return map[string]any{"text": text}
 	}

@@ -93,6 +93,45 @@ func buildGoogleTTSSchema() json.RawMessage {
 	return data
 }
 
+func buildPiperTTSSchema() json.RawMessage {
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"text": map[string]any{
+				"type":        "string",
+				"description": "The text to convert to speech using Piper TTS (offline neural engine)",
+			},
+			"model": map[string]any{
+				"type":        "string",
+				"description": "Path to ONNX model file or model name. Uses PIPER_MODEL env var if not set.",
+			},
+			"speaker": map[string]any{
+				"type":        "integer",
+				"description": "Speaker ID for multi-speaker models (default: 0)",
+				"minimum":     0,
+			},
+			"length_scale": map[string]any{
+				"type":        "number",
+				"description": "Speaking rate — higher values are slower (default: 1.0)",
+				"minimum":     0.1,
+				"maximum":     5.0,
+			},
+			"noise_scale": map[string]any{
+				"type":        "number",
+				"description": "Variation in speech (default: 0.667)",
+				"minimum":     0.0,
+				"maximum":     1.0,
+			},
+		},
+		"required": []string{"text"},
+	}
+	data, err := json.Marshal(schema)
+	if err != nil {
+		panic(fmt.Sprintf("failed to marshal piper_tts schema: %v", err))
+	}
+	return data
+}
+
 func buildOpenAITTSSchema() json.RawMessage {
 	schema := map[string]any{
 		"type": "object",

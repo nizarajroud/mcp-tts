@@ -440,9 +440,11 @@ Provides multiple text-to-speech services via MCP protocol:
 • elevenlabs_tts - Uses ElevenLabs API for high-quality speech synthesis
 • google_tts - Uses Google's Gemini TTS models for natural speech
 • openai_tts - Uses OpenAI's TTS API with various voice options
+• piper_tts - Uses Piper, a fast offline neural TTS engine (no API key)
 
 Each tool supports different voices, rates, and configuration options.
 Requires appropriate API keys for cloud-based services.
+Piper runs fully offline with downloadable ONNX voice models.
 
 Designed to be used with the MCP (Model Context Protocol).`,
 	Args: cobra.NoArgs,
@@ -889,6 +891,46 @@ Designed to be used with the MCP (Model Context Protocol).`,
 				func() error { return playPCM("google_tts", audioData, googleTTSSampleRate) },
 			)
 		})
+
+		// Add Piper TTS tool (offline neural TTS)
+		if isPiperAvailable() {
+			piperTTSTool := &mcp.Tool{
+				Name:        "piper_tts",
+				Title:       "Piper (Offline)",
+				Description: "Uses Piper, a fast local neural text-to-speech engine. Runs fully offline with ONNX voice models — no API key required.",
+				InputSchema: buildPiperTTSSchema(),
+				Annotations: &mcp.ToolAnnotations{
+					Title:          "Piper Offline Text-to-Speech",
+					ReadOnlyHint:   false,
+					IdempotentHint: true,
+				},
+			}
+
+			mcp.AddTool(s, piperTTSTool, func(ctx context.Context, _ *mcp.CallToolRequest, input PiperTTSParams) (*mcp.CallToolResult, any, error) {
+				select {
+				case <-ctx.Done():
+					return textResult("Request cancelled"), nil, nil
+				default:
+				}
+
+				log.Debug("Piper TTS tool called", "params", input)
+				text := input.Text
+				if text == "" {
+					return errorResult("Error: Empty text provided"), nil, nil
+				}
+
+				audioData, sampleRate, err := runPiper(ctx, input)
+				if err != nil {
+					log.Error("Piper TTS failed", "error", err)
+					return errorResult(fmt.Sprintf("Error: %v", err)), nil, nil
+				}
+
+				return deliverAudio(text, audioData,
+					func(d []byte, t string) (string, error) { return saveWAV(d, sampleRate, t) },
+					func() error { return playPCM("piper_tts", audioData, sampleRate) },
+				)
+			})
+		}
 
 		// Add OpenAI TTS tool
 		openaiTTSTool := &mcp.Tool{
