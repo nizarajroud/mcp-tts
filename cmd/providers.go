@@ -99,5 +99,15 @@ func availableProviders() []providerOption {
 	if os.Getenv("OPENAI_API_KEY") != "" {
 		providers = append(providers, providerOption{ProviderOpenAI, "OpenAI"})
 	}
+	// If MCP_TTS_DEFAULT_PROVIDER is set, move that provider to the front.
+	if def := os.Getenv("MCP_TTS_DEFAULT_PROVIDER"); def != "" {
+		for i, p := range providers {
+			if p.ID == def {
+				// Move to front
+				providers = append([]providerOption{p}, append(providers[:i], providers[i+1:]...)...)
+				break
+			}
+		}
+	}
 	return providers
 }
